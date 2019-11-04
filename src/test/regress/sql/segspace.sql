@@ -2,10 +2,6 @@
 -- Tests the spill files disk space accounting mechanism
 --
 
--- start_ignore
-CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
--- end_ignore
-
 -- check segspace before test
 reset statement_mem;
 select max(bytes) as max, min(bytes) as min from gp_toolkit.gp_workfile_mgr_used_diskspace;
@@ -259,6 +255,8 @@ update foo set d = i1 from (select i1,i2 from testsort order by i2) x;
 -- check counter leak
 select max(bytes) as max, min(bytes) as min from gp_toolkit.gp_workfile_mgr_used_diskspace;
 
+drop table testsort;
+
 ------------ workfile_limit_per_segment leak check during UPDATE of SHARE_SORT_XSLICE -------------------
 
 drop table if exists testsisc;
@@ -327,3 +325,5 @@ end;
 $func$ language plpgsql;
 
 select workset_cleanup_test();
+
+drop table segspace_test_hj_skew;

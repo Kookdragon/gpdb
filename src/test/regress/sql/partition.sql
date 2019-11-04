@@ -1,4 +1,3 @@
-set enable_partition_rules = false;
 
 drop table if exists d;
 drop table if exists c;
@@ -1618,8 +1617,7 @@ create table ggg (a char(1), b int)
 distributed by (b)
 partition by range(a)
 (
-partition aa start ('2006') end ('2009'), partition bb start ('2007') end
-('2008')
+partition aa start ('2006') end ('2009'), partition bb start ('2007') end ('2008')
 );
 
 

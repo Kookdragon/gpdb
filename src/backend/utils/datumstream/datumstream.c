@@ -178,6 +178,7 @@ datumstreamread_getlarge(DatumStreamRead * acc, Datum *datum, bool *null)
 			acc->largeObjectState = DatumStreamLargeObjectState_Consumed;
 
 			/* Fall below to ~_Consumed. */
+			/* fallthrough */
 
 		case DatumStreamLargeObjectState_Consumed:
 			{
@@ -1193,7 +1194,7 @@ datumstreamread_block_content(DatumStreamRead * acc)
 					pfree(acc->large_object_buffer);
 					acc->large_object_buffer = NULL;
 
-					SIMPLE_FAULT_INJECTOR(MallocFailure);
+					SIMPLE_FAULT_INJECTOR("malloc_failure");
 				}
 
 				acc->large_object_buffer_size = acc->getBlockInfo.contentLen;

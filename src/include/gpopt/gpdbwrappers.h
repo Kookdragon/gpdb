@@ -392,9 +392,6 @@ namespace gpdb {
 	// deep free of a list
 	void ListFreeDeep(List *list);
 
-	// is this a Gather motion
-	bool IsMotionGather(const Motion *motion);
-
 	// does a partition table have an appendonly child
 	bool IsAppendOnlyPartitionTable(Oid root_oid);
 
@@ -463,6 +460,9 @@ namespace gpdb {
 
 	// is the given operator hash-joinable
 	bool IsOpHashJoinable(Oid opno, Oid inputtype);
+
+	// is the given operator merge-joinable
+	bool IsOpMergeJoinable(Oid opno, Oid inputtype);
 
 	// is the given operator strict
 	bool IsOpStrict(Oid opno);
@@ -615,6 +615,9 @@ namespace gpdb {
 	// get oids of op classes for the index keys
 	List *GetIndexOpFamilies(Oid index_oid);
 
+	// get oids of op classes for the merge join
+	List *GetMergeJoinOpFamilies(Oid opno);
+
 	// returns the result of evaluating 'expr' as an Expr. Caller keeps ownership of 'expr'
 	// and takes ownership of the result 
 	Expr *EvaluateExpr(Expr *expr, Oid result_type, int32 typmod);
@@ -635,7 +638,7 @@ namespace gpdb {
 	SelectedParts *RunStaticPartitionSelection(PartitionSelector *ps);
 
 	// simple fault injector used by COptTasks.cpp to inject GPDB fault
-	FaultInjectorType_e InjectFaultInOptTasks(FaultInjectorIdentifier_e identifier);
+	FaultInjectorType_e InjectFaultInOptTasks(const char* fault_name);
 
 	// return the number of leaf partition for a given table oid
 	gpos::ULONG CountLeafPartTables(Oid oidRelation);
@@ -643,11 +646,6 @@ namespace gpdb {
 	// Does the metadata cache need to be reset (because of a catalog
 	// table has been changed?)
 	bool MDCacheNeedsReset(void);
-
-	// functions for tracking ORCA memory consumption
-	void *OptimizerAlloc(size_t size);
-
-	void OptimizerFree(void *ptr);
 
 	// returns true if a query cancel is requested in GPDB
 	bool IsAbortRequested(void);
@@ -659,6 +657,14 @@ namespace gpdb {
 	uint32 HashBpChar(Datum d);
 
 	uint32 HashText(Datum d);
+
+	uint32 UUIDHash(Datum d);
+
+	void * GPDBMemoryContextAlloc(MemoryContext context, Size size);
+
+	MemoryContext GPDBAllocSetContextCreate();
+
+	void GPDBMemoryContextDelete(MemoryContext context);
 
 } //namespace gpdb
 

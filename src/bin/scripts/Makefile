@@ -2,7 +2,7 @@
 #
 # Makefile for src/bin/scripts
 #
-# Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/bin/scripts/Makefile
@@ -15,12 +15,6 @@ PGAPPICON=win32
 subdir = src/bin/scripts
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
-
-# The frontend doesn't need everything that's in LIBS, some are backend only
-LIBS := $(filter-out -lresolv -lbz2, $(LIBS))
-# This program isn't interactive, so doesn't need these
-LIBS := $(filter-out -lreadline -ledit -ltermcap -lncurses -lcurses -lcurl -lssl -lcrypto -lz, $(LIBS))
-
 
 PROGRAMS = createdb createlang createuser dropdb droplang dropuser clusterdb vacuumdb reindexdb pg_isready
 
@@ -81,7 +75,7 @@ clean distclean maintainer-clean:
 	rm -f dumputils.c print.c mbprint.c kwlookup.c keywords.c
 	rm -rf tmp_check
 
-check: all
+check:
 	$(prove_check)
 
 installcheck:

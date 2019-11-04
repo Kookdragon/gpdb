@@ -5,7 +5,7 @@
  *	  along with the relation's initial contents.
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_opfamily.h
@@ -162,44 +162,35 @@ DATA(insert OID = 4035 (	783		jsonb_ops		PGNSP PGUID ));
 DATA(insert OID = 4036 (	2742	jsonb_ops		PGNSP PGUID ));
 DATA(insert OID = 4037 (	2742	jsonb_path_ops	PGNSP PGUID ));
 
+DATA(insert OID = 4054 (	3580	integer_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4055 (	3580	numeric_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4056 (	3580	text_minmax_ops			PGNSP PGUID ));
+DATA(insert OID = 4058 (	3580	timetz_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4059 (	3580	datetime_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4062 (	3580	char_minmax_ops			PGNSP PGUID ));
+DATA(insert OID = 4064 (	3580	bytea_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4065 (	3580	name_minmax_ops			PGNSP PGUID ));
+DATA(insert OID = 4068 (	3580	oid_minmax_ops			PGNSP PGUID ));
+DATA(insert OID = 4069 (	3580	tid_minmax_ops			PGNSP PGUID ));
+DATA(insert OID = 4070 (	3580	float_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4072 (	3580	abstime_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4073 (	3580	reltime_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4074 (	3580	macaddr_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4075 (	3580	network_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4102 (	3580	network_inclusion_ops	PGNSP PGUID ));
+DATA(insert OID = 4076 (	3580	bpchar_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4077 (	3580	time_minmax_ops			PGNSP PGUID ));
+DATA(insert OID = 4078 (	3580	interval_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4079 (	3580	bit_minmax_ops			PGNSP PGUID ));
+DATA(insert OID = 4080 (	3580	varbit_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4081 (	3580	uuid_minmax_ops			PGNSP PGUID ));
+DATA(insert OID = 4103 (	3580	range_inclusion_ops		PGNSP PGUID ));
+DATA(insert OID = 4082 (	3580	pg_lsn_minmax_ops		PGNSP PGUID ));
+DATA(insert OID = 4104 (	3580	box_inclusion_ops		PGNSP PGUID ));
+
 /* Complex Number type */
 DATA(insert OID = 6221 (	403		complex_ops		PGNSP PGUID ));
 DATA(insert OID = 6224 (	405		complex_ops		PGNSP PGUID ));
-
-/*
- * on-disk bitmap index opfamilies.
- */
-DATA(insert OID = 7014 (	7013	abstime_ops		PGNSP PGUID ));
-DATA(insert OID = 7015 (	7013	array_ops		PGNSP PGUID ));
-DATA(insert OID = 7016 (	7013	bit_ops			PGNSP PGUID ));
-DATA(insert OID = 7017 (	7013	bool_ops		PGNSP PGUID ));
-DATA(insert OID = 7018 (	7013	bpchar_ops		PGNSP PGUID ));
-DATA(insert OID = 7019 (	7013	bytea_ops		PGNSP PGUID ));
-DATA(insert OID = 7020 (	7013	char_ops		PGNSP PGUID ));
-DATA(insert OID = 7022 (	7013	date_ops		PGNSP PGUID ));
-DATA(insert OID = 7023 (	7013	float4_ops		PGNSP PGUID ));
-DATA(insert OID = 7024 (	7013	float8_ops		PGNSP PGUID ));
-DATA(insert OID = 7025 (	7013	inet_ops		PGNSP PGUID ));
-DATA(insert OID = 7026 (	7013	int2_ops		PGNSP PGUID ));
-DATA(insert OID = 7027 (	7013	int4_ops		PGNSP PGUID ));
-DATA(insert OID = 7028 (	7013	int8_ops		PGNSP PGUID ));
-DATA(insert OID = 7029 (	7013	interval_ops	PGNSP PGUID ));
-DATA(insert OID = 7030 (	7013	macaddr_ops		PGNSP PGUID ));
-DATA(insert OID = 7031 (	7013	name_ops		PGNSP PGUID ));
-DATA(insert OID = 7032 (	7013	numeric_ops		PGNSP PGUID ));
-DATA(insert OID = 7033 (	7013	oid_ops			PGNSP PGUID ));
-DATA(insert OID = 7034 (	7013	oidvector_ops	PGNSP PGUID ));
-DATA(insert OID = 7035 (	7013	text_ops		PGNSP PGUID ));
-DATA(insert OID = 7036 (	7013	time_ops		PGNSP PGUID ));
-DATA(insert OID = 7037 (	7013	timestamptz_ops	PGNSP PGUID ));
-DATA(insert OID = 7038 (	7013	timetz_ops		PGNSP PGUID ));
-DATA(insert OID = 7039 (	7013	varbit_ops		PGNSP PGUID ));
-DATA(insert OID = 7041 (	7013	timestamp_ops	PGNSP PGUID ));
-DATA(insert OID = 7042 (	7013	text_pattern_ops	PGNSP PGUID ));
-DATA(insert OID = 7044 (	7013	bpchar_pattern_ops	PGNSP PGUID ));
-DATA(insert OID = 7046 (	7013	money_ops		PGNSP PGUID ));
-DATA(insert OID = 7047 (	7013	reltime_ops		PGNSP PGUID ));
-DATA(insert OID = 7048 (	7013	tinterval_ops	PGNSP PGUID ));
 
 /*
  * hash support for a few built-in datatypes that are missing it in upstream.

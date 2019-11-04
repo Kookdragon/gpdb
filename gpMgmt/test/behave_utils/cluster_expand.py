@@ -1,6 +1,9 @@
 import glob
 from datetime import datetime, timedelta
-from subprocess import Popen, PIPE
+try:
+    from subprocess32 import Popen, PIPE
+except:
+    from subprocess import Popen, PIPE
 from utils import run_gpcommand
 
 from gppylib.commands.base import Command
@@ -65,13 +68,15 @@ class Gpexpand:
         return output, p1.wait()
 
     def initialize_segments(self, additional_params=''):
-        input_files = sorted(glob.glob('%s/gpexpand_inputfile*' % self.working_directory))
+        fns = filter(lambda fn: not fn.endswith(".ts"),
+                     glob.glob('%s/gpexpand_inputfile*' % self.working_directory))
+        input_files = sorted(fns)
         return run_gpcommand(self.context, "gpexpand -i %s %s" % (input_files[-1], additional_params))
 
     def get_redistribute_status(self):
         sql = 'select status from gpexpand.status order by updated desc limit 1'
         dburl = dbconn.DbURL(dbname=self.database)
-        conn = dbconn.connect(dburl, encoding='UTF8')
+        conn = dbconn.connect(dburl, encoding='UTF8', unsetSearchPath=False)
         status = dbconn.execSQLForSingleton(conn, sql)
         if status == 'EXPANSION COMPLETE':
             rc = 0

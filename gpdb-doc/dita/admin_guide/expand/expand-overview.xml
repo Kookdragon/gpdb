@@ -4,7 +4,8 @@
 <topic id="topic3" xml:lang="en">
   <title>System Expansion Overview</title>
   <shortdesc>You can perform a Greenplum Database expansion to add segment instances and segment
-    hosts with minimal downtime.</shortdesc>
+    hosts with minimal downtime. In general, adding nodes to a Greenplum cluster achieves a linear scaling 
+    of performance and storage capacity. </shortdesc>
   <body>
     <p>Data warehouses typically grow over time, often at a continuous pace, as additional data is
       gathered and the retention period increases for existing data. At times, it is necessary to
@@ -70,14 +71,16 @@
         <li>The last step of the software phase is redistributing table data. Using the expansion
           control tables in the <i>gpexpand</i> schema as a guide, tables are redistributed. For
           each table:<ul id="ul_uxt_png_tt">
-            <li>The <codeph><xref href="../../utility_guide/admin_utilities/gpexpand.xml"
+            <li>The <codeph><xref href="../../utility_guide/ref/gpexpand.xml"
                   >gpexand</xref></codeph> utility redistributes the table data, across all of the
               servers, old and new, according to the distribution policy.</li>
             <li>The table's status is updated in the expansion control tables.</li>
             <li>After data redistribution, the query optimizer creates more efficient execution
               plans when data is not skewed.</li>
           </ul><p>When all tables have been redistributed, the expansion is complete.</p></li>
-      </ul></p>
+      </ul><note type="important">The <codeph>gprestore</codeph> utility cannot restore backups you
+        made before the expansion with the <codeph>gpbackup</codeph> utility, so back up your
+        databases immediately after the system expansion is complete.</note></p>
     <p>Redistributing table data is a long-running process that creates a large volume of network
       and disk activity. It can take days to redistribute some very large databases. To minimize the
       effects of the increased activity on business operations, system administrators can pause and
@@ -115,7 +118,7 @@
       <li id="no165990">To remove the expansion schema:<codeblock>gpexpand -c</codeblock></li>
     </ol>
     <p>For information about the <codeph><xref
-          href="../../utility_guide/admin_utilities/gpexpand.xml">gpexand</xref></codeph> utility
+          href="../../utility_guide/ref/gpexpand.xml">gpexpand</xref></codeph> utility
       and the other utilities that are used for system expansion, see the <i>Greenplum Database
         Utility Guide</i>. </p>
   </body>

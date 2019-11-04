@@ -145,16 +145,6 @@ formatTuple(StringInfo buf, HeapTuple tup, TupleDesc tupdesc, Oid *outputFunArra
 }
 #endif
 
-/**
- * Is it a gather motion?
- */
-bool
-isMotionGather(const Motion *m)
-{
-	return (m->motionType == MOTIONTYPE_FIXED
-			&& !m->isBroadcast);
-}
-
 /* ----------------------------------------------------------------
  *		ExecMotion
  * ----------------------------------------------------------------
@@ -283,9 +273,10 @@ execMotionSender(MotionState *node)
 	gettimeofday(&time1, NULL);
 #endif
 
-	AssertState(motion->motionType == MOTIONTYPE_HASH ||
-				(motion->motionType == MOTIONTYPE_EXPLICIT && motion->segidColIdx > 0) ||
-				(motion->motionType == MOTIONTYPE_FIXED));
+	AssertState(motion->motionType == MOTIONTYPE_GATHER ||
+				motion->motionType == MOTIONTYPE_HASH ||
+				motion->motionType == MOTIONTYPE_BROADCAST ||
+				(motion->motionType == MOTIONTYPE_EXPLICIT && motion->segidColIdx > 0));
 	Assert(node->ps.state->interconnect_context);
 
 	while (!done)
@@ -374,9 +365,10 @@ execMotionUnsortedReceiver(MotionState *node)
 	GenericTuple tuple;
 	Motion	   *motion = (Motion *) node->ps.plan;
 
-	AssertState(motion->motionType == MOTIONTYPE_HASH ||
-				(motion->motionType == MOTIONTYPE_EXPLICIT && motion->segidColIdx > 0) ||
-				(motion->motionType == MOTIONTYPE_FIXED));
+	AssertState(motion->motionType == MOTIONTYPE_GATHER ||
+				motion->motionType == MOTIONTYPE_HASH ||
+				motion->motionType == MOTIONTYPE_BROADCAST ||
+				(motion->motionType == MOTIONTYPE_EXPLICIT && motion->segidColIdx > 0));
 
 	Assert(node->ps.state->motionlayer_context);
 	Assert(node->ps.state->interconnect_context);
@@ -608,7 +600,7 @@ execMotionSortedReceiver_mk(MotionState *node)
 	Motion	   *motion = (Motion *) node->ps.plan;
 	MotionMKHeapContext *ctxt = node->tupleheap_mk;
 
-	Assert(motion->motionType == MOTIONTYPE_FIXED &&
+	Assert(motion->motionType == MOTIONTYPE_GATHER &&
 		   motion->sendSorted &&
 		   ctxt
 		);
@@ -650,7 +642,7 @@ execMotionSortedReceiver(MotionState *node)
 	Motion	   *motion = (Motion *) node->ps.plan;
 	CdbTupleHeapInfo *tupHeapInfo;
 
-	AssertState(motion->motionType == MOTIONTYPE_FIXED &&
+	AssertState(motion->motionType == MOTIONTYPE_GATHER &&
 				motion->sendSorted &&
 				hp != NULL);
 
@@ -885,10 +877,23 @@ ExecInitMotion(Motion *node, EState *estate, int eflags)
 	Slice	   *sendSlice = NULL;
 	Slice	   *recvSlice = NULL;
 	SliceTable *sliceTable = estate->es_sliceTable;
+	PlanState  *outerPlan;
 
 #ifdef CDB_MOTION_DEBUG
 	int			i;
 #endif
+
+	/*
+	 * If GDD is enabled, the lock of table may downgrade to RowExclusiveLock,
+	 * (see CdbTryOpenRelation function), then EPQ would be triggered, EPQ will
+	 * execute the subplan in the executor, so it will create a new EState,
+	 * but there are no slice tables in the new EState and we can not AssignGangs
+	 * on the QE. In this case, we raise an error.
+	 */
+	if (estate->es_epqTuple)
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("EvalPlanQual can not handle subPlan with Motion node")));
 
 	Assert(node->motionID > 0);
 	Assert(node->motionID <= sliceTable->nMotions);
@@ -921,7 +926,7 @@ ExecInitMotion(Motion *node, EState *estate, int eflags)
 		/* Look up the receiving (parent) gang's slice table entry. */
 		recvSlice = (Slice *) list_nth(sliceTable->slices, sendSlice->parentIndex);
 
-		if (node->motionType == MOTIONTYPE_FIXED && !node->isBroadcast)
+		if (node->motionType == MOTIONTYPE_GATHER)
 		{
 			/* Sending to a single receiving process on the entry db? */
 			/* Is receiving slice a root slice that runs here in the qDisp? */
@@ -967,8 +972,7 @@ ExecInitMotion(Motion *node, EState *estate, int eflags)
 	 * mark isExplictGatherMotion to true
 	 */
 	if (motionstate->mstype == MOTIONSTATE_SEND &&
-		node->motionType == MOTIONTYPE_FIXED &&
-		!node->isBroadcast &&
+		node->motionType == MOTIONTYPE_GATHER &&
 		outerPlan(node) &&
 		outerPlan(node)->flow &&
 		outerPlan(node)->flow->locustype == CdbLocusType_Replicated)
@@ -1017,9 +1021,37 @@ ExecInitMotion(Motion *node, EState *estate, int eflags)
 	 * initialize tuple type.  no need to initialize projection info because
 	 * this node doesn't do projections.
 	 */
-	ExecAssignResultTypeFromTL(&motionstate->ps);
+	outerPlan = outerPlanState(motionstate);
+
+	/*
+	 * The advertised 'tdhasoid' flag in our result tuple desc must match what
+	 * the outer plan produces. Otherwise, the sender will send tuples that
+	 * have OIDs, but the receiver treats the tuples as if they doesn't have
+	 * OIDs, or vice versa. This isn't so important for HeapTuples, which have
+	 * an HAS_OIDS flag on every tuple, but for MemTuples it is critical,
+	 * because it affects the way the they are deformed.
+	 *
+	 * GPDB_95_MERGE_FIXME: Should we force ORCA to always use the TL for
+	 * motion nodes or modify ORCA to use the TL from the outer node?
+	 */
+	if (outerPlan && ExecGetResultType(outerPlan) && estate->es_plannedstmt->planGen == PLANGEN_PLANNER)
+	{
+		/*
+		 * This is like ExecAssignResultTypeFromTL(), but we copy the tdhasoid
+		 * flag from the subplan.
+		 */
+		bool		hasoid = ExecGetResultType(outerPlan)->tdhasoid;
+
+		tupDesc = ExecTypeFromTL(motionstate->ps.plan->targetlist, hasoid);
+		ExecAssignResultType(&motionstate->ps, tupDesc);
+	}
+	else
+	{
+		ExecAssignResultTypeFromTL(&motionstate->ps);
+		tupDesc = ExecGetResultType(&motionstate->ps);
+	}
+
 	motionstate->ps.ps_ProjInfo = NULL;
-	tupDesc = ExecGetResultType(&motionstate->ps);
 
 	/* Set up motion send data structures */
 	if (motionstate->mstype == MOTIONSTATE_SEND && node->motionType == MOTIONTYPE_HASH)
@@ -1462,22 +1494,20 @@ doSendTuple(Motion *motion, MotionState *node, TupleTableSlot *outerTupleSlot)
 	/* We got a tuple from the child-plan. */
 	node->numTuplesFromChild++;
 
-	if (motion->motionType == MOTIONTYPE_FIXED)
+	if (motion->motionType == MOTIONTYPE_GATHER)
 	{
-		if (motion->isBroadcast)	/* Broadcast */
-		{
-			targetRoute = BROADCAST_SEGIDX;
-		}
-		else					/* Fixed Motion. */
-		{
-			/*
-			 * Actually, since we can only send to a single output segment
-			 * here, we are guaranteed that we only have a single targetRoute
-			 * setup that we could possibly send to.  So we can cheat and just
-			 * fix the targetRoute to 0 (the 1st route).
-			 */
-			targetRoute = 0;
-		}
+		/*
+		 * Actually, since we can only send to a single output segment
+		 * here, we are guaranteed that we only have a single targetRoute
+		 * setup that we could possibly send to.  So we can cheat and just
+		 * fix the targetRoute to 0 (the 1st route).
+		 */
+		targetRoute = 0;
+
+	}
+	else if (motion->motionType == MOTIONTYPE_BROADCAST)
+	{
+		targetRoute = BROADCAST_SEGIDX;
 	}
 	else if (motion->motionType == MOTIONTYPE_HASH) /* Redistribute */
 	{
@@ -1517,7 +1547,7 @@ doSendTuple(Motion *motion, MotionState *node, TupleTableSlot *outerTupleSlot)
 		 */
 		Assert(targetRoute != BROADCAST_SEGIDX);
 	}
-	else						/* ExplicitRedistribute */
+	else if (motion->motionType == MOTIONTYPE_EXPLICIT)
 	{
 		Datum		segidColIdxDatum;
 
@@ -1528,6 +1558,8 @@ doSendTuple(Motion *motion, MotionState *node, TupleTableSlot *outerTupleSlot)
 		targetRoute = Int32GetDatum(segidColIdxDatum);
 		Assert(!is_null);
 	}
+	else
+		elog(ERROR, "unknown motion type %d", motion->motionType);
 
 	CheckAndSendRecordCache(node->ps.state->motionlayer_context,
 							node->ps.state->interconnect_context,
@@ -1546,7 +1578,6 @@ doSendTuple(Motion *motion, MotionState *node, TupleTableSlot *outerTupleSlot)
 		node->numTuplesToAMS++;
 	else
 		node->stopRequested = true;
-
 
 #ifdef CDB_MOTION_DEBUG
 	if (sendRC == SEND_COMPLETE && node->numTuplesToAMS <= 20)

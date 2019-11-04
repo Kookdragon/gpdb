@@ -1373,7 +1373,7 @@ with my_sum(total) as (select sum(total) from with_test1),
 with my_group_sum(i, total) as (select i, sum(total) from with_test1 group by i)
 select *
 from my_sum;
-ERROR:  syntax error at or near "with my_group_sum"
+ERROR:  syntax error at or near "with"
 LINE 2: with my_group_sum(i, total) as (select i, sum(total) from wi...
         ^
 -- Test behavior with an unknown-type literal in the WITH
@@ -2163,3 +2163,20 @@ SELECT * FROM y;
  1100 |  
 (15 rows)
 
+-- Nested RECURSIVE queries with double self-referential joins are planned by
+-- joining two WorkTableScans, which GPDB cannot do yet. Ensure that we error
+-- out with a descriptive message.
+WITH RECURSIVE r1 AS (
+	SELECT 1 AS a
+	UNION ALL
+	(
+		WITH RECURSIVE r2 AS (
+			SELECT 2 AS b
+			UNION ALL
+			SELECT b FROM r1, r2
+		)
+		SELECT b FROM r2
+	)
+)
+SELECT * FROM r1 LIMIT 1;
+ERROR:  joining nested RECURSIVE clauses is not supported

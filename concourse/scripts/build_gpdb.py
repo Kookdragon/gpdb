@@ -12,6 +12,8 @@ from builds.GpBuild import GpBuild
 
 INSTALL_DIR = "/usr/local/gpdb"
 DEPENDENCY_INSTALL_DIR = "/usr/local"
+SCRIPT_LOC=os.path.dirname(os.path.realpath(__file__))
+GPDB_SRC_DIR="{0}/../../".format(SCRIPT_LOC)
 
 
 def copy_installed(output_dir):
@@ -31,7 +33,7 @@ def print_compiler_version():
 
 
 def create_gpadmin_user():
-    status = subprocess.call("gpdb_src/concourse/scripts/setup_gpadmin_user.bash")
+    status = subprocess.call("{0}/concourse/scripts/setup_gpadmin_user.bash".format(GPDB_SRC_DIR))
     os.chmod('/bin/ping', os.stat('/bin/ping').st_mode | stat.S_ISUID)
     if status:
         return status
@@ -60,7 +62,6 @@ def copy_output():
     shutil.copyfile("gpdb_src/src/test/regress/regression.diffs", "icg_output/regression.diffs")
     shutil.copyfile("gpdb_src/src/test/regress/regression.out", "icg_output/regression.out")
 
-
 def install_dependencies(ci_common, dependencies, install_dir):
     for dependency in dependencies:
         status = ci_common.install_dependency(dependency, install_dir)
@@ -88,6 +89,7 @@ def main():
     parser.add_option("--action", choices=['build', 'test', 'test_explain_suite'], dest="action", default='build',
                       help="Build GPDB or Run Install Check")
     parser.add_option("--gpdb_name", dest="gpdb_name")
+    parser.add_option("--dbexists", dest="dbexists", action="store_true", default=False, help="create demo cluster or not")
     (options, args) = parser.parse_args()
 
     gpBuild = GpBuild(options.mode)
@@ -152,7 +154,7 @@ def main():
         fail_on_error(status)
         status = extract_explain_test_suite()
         fail_on_error(status)
-        status = gpBuild.run_explain_test_suite()
+        status = gpBuild.run_explain_test_suite(options.dbexists)
         fail_on_error(status)
         status = tar_explain_output()
         fail_on_error(status)

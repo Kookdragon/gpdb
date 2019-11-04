@@ -3,7 +3,7 @@
  * parse_cte.c
  *	  handle CTEs (common table expressions) in parser
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1076,7 +1076,7 @@ checkWindowFuncInRecursiveTerm(SelectStmt *stmt, CteState *cstate)
 				{
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("Window Functions in a recursive query is not implemented"),
+							 errmsg("window functions in a recursive query is not implemented"),
 							 parser_errposition(cstate->pstate,
 												exprLocation((Node *) fc))));
 				}

@@ -49,8 +49,20 @@ except Exception, e:
     sys.exit(2)
 
 import hashlib
-import datetime,getpass,os,signal,socket,subprocess,threading,time,traceback,re
+import datetime,getpass,os,signal,socket,threading,time,traceback,re
+try:
+    import subprocess32 as subprocess
+except:
+    import subprocess
 import uuid
+
+try:
+    from gppylib.gpversion import GpVersion
+except ImportError:
+    sys.stderr.write("gpload can't import gpversion, will run in GPDB5 compatibility mode.\n")
+    noGpVersion = True
+else:
+    noGpVersion = False
 
 thePlatform = platform.system()
 if thePlatform in ['Windows', 'Microsoft']:
@@ -1144,6 +1156,7 @@ class gpload:
         self.formatOpts = ""
         self.startTimestamp = time.time()
         self.error_table = False
+        self.gpdb_version = ""
         seenv = False
         seenq = False
 
@@ -1813,6 +1826,13 @@ class gpload:
                            , passwd=self.options.password
                            )
             self.log(self.DEBUG, "Successfully connected to database")
+
+            if noGpVersion == False:
+                # Get GPDB version
+                curs = self.db.query("SELECT version()")
+                self.gpdb_version = GpVersion(curs.getresult()[0][0])
+                self.log(self.DEBUG, "GPDB version is: %s" % self.gpdb_version)
+
         except Exception, e:
             errorMessage = str(e)
             if errorMessage.find("no password supplied") != -1:
@@ -1908,8 +1928,8 @@ class gpload:
               WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef) as has_sequence
           from pg_catalog.pg_class c join pg_catalog.pg_namespace nt on (c.relnamespace = nt.oid)
              join pg_attribute a on (a.attrelid = c.oid)
-         where c.relname = '%s' and nt.nspname = '%s'
-         and a.attnum > 0 and a.attisdropped = 'f'
+         where a.attnum > 0 and a.attisdropped = 'f'
+         and a.attrelid = (select c.oid from pg_catalog.pg_class c join pg_catalog.pg_namespace nt on (c.relnamespace = nt.oid) where c.relname = '%s' and nt.nspname = '%s')
          order by a.attnum """ % (quote_unident(self.table), quote_unident(self.schema))
 
         count = 0
@@ -2036,10 +2056,16 @@ class gpload:
 
         sql = sqlFormat % (joinStr, conditionStr)
 
-        if log_errors:
-            sql += " WHERE pgext.logerrors "
+        if noGpVersion or self.gpdb_version < "6.0.0":
+            if log_errors:
+                sql += " WHERE pgext.fmterrtbl = pgext.reloid "
+            else:
+                sql += " WHERE pgext.fmterrtbl IS NULL "
         else:
-            sql += " WHERE NOT pgext.logerrors "
+            if log_errors:
+                sql += " WHERE pgext.logerrors "
+            else:
+                sql += " WHERE NOT pgext.logerrors "
 
         for i, l in enumerate(self.locations):
             sql += " and pgext.urilocation[%s] = %s\n" % (i + 1, quote(l))
@@ -2112,10 +2138,16 @@ class gpload:
 
         sql = sqlFormat % (joinStr, conditionStr)
 
-        if log_errors:
-            sql += "and pgext.logerrors "
+        if noGpVersion or self.gpdb_version < "6.0.0":
+            if log_errors:
+                sql += " and pgext.fmterrtbl = pgext.reloid "
+            else:
+                sql += " and pgext.fmterrtbl IS NULL "
         else:
-            sql += "and NOT pgext.logerrors "
+            if log_errors:
+                sql += " and pgext.logerrors "
+            else:
+                sql += " and NOT pgext.logerrors "
 
         for i, l in enumerate(self.locations):
             sql += " and pgext.urilocation[%s] = %s\n" % (i + 1, quote(l))
@@ -2221,7 +2253,6 @@ class gpload:
             if val.startswith("E'") and val.endswith("'") and len(val[2:-1].decode('unicode-escape')) == 1:
                 subval = val[2:-1]
                 if subval == "\\'":
-                    val = val
                     self.formatOpts += "%s %s " % (specify_str, val)
                 else:
                     val = subval.decode('unicode-escape')
@@ -2638,13 +2669,20 @@ class gpload:
     def get_table_dist_key(self):
         # NOTE: this query should be re-written better. the problem is that it is
         # not possible to perform a cast on a table name with spaces...
-        sql = "select attname from pg_attribute a, gp_distribution_policy p , pg_class c, pg_namespace n "+\
-              "where a.attrelid = c.oid and " + \
-              "a.attrelid = p.localoid and " + \
-              "a.attnum = any (p.distkey) and " + \
-              "c.relnamespace = n.oid and " + \
-              "n.nspname = '%s' and c.relname = '%s'; " % (quote_unident(self.schema), quote_unident(self.table))
-
+        if noGpVersion or self.gpdb_version < "6.0.0":
+            sql = "select attname from pg_attribute a, gp_distribution_policy p , pg_class c, pg_namespace n "+\
+                "where a.attrelid = c.oid and " + \
+                "a.attrelid = p.localoid and " + \
+                "a.attnum = any (p.attrnums) and " + \
+                "c.relnamespace = n.oid and " + \
+                "n.nspname = '%s' and c.relname = '%s'; " % (quote_unident(self.schema), quote_unident(self.table))
+        else:
+            sql = "select attname from pg_attribute a, gp_distribution_policy p , pg_class c, pg_namespace n "+\
+                "where a.attrelid = c.oid and " + \
+                "a.attrelid = p.localoid and " + \
+                "a.attnum = any (p.distkey) and " + \
+                "c.relnamespace = n.oid and " + \
+                "n.nspname = '%s' and c.relname = '%s'; " % (quote_unident(self.schema), quote_unident(self.table))
 
         resultList = self.db.query(sql.encode('utf-8')).getresult()
         attrs = []
@@ -2887,10 +2925,6 @@ class gpload:
                 self.log(self.INFO, 'gpload succeeded with warnings')
             else:
                 self.log(self.INFO, 'gpload failed')
-
-            ## MPP-19015 - Extra python thread shutdown time is needed on HP-UX
-            if platform.uname()[0] == 'HP-UX':
-                time.sleep(1)
 
 
 if __name__ == '__main__':

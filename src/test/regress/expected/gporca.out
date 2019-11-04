@@ -2388,32 +2388,30 @@ select count(*) from orca.foo x where x.x1 > (select count(*)+1 from orca.bar1 y
 -- result node with one time filter and filter
 explain select case when bar1.x2 = bar2.x2 then coalesce((select 1 from orca.foo where bar1.x2 = bar2.x2 and bar1.x2 = random() and foo.x2 = bar2.x2),0) else 1 end as col1, bar1.x1
 from orca.bar1 inner join orca.bar2 on (bar1.x2 = bar2.x2) order by bar1.x1; 
-                                                     QUERY PLAN                                                      
----------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice4; segments: 3)  (cost=72.61..72.66 rows=20 width=12)
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice3; segments: 3)  (cost=75.54..75.59 rows=20 width=12)
    Merge Key: bar1.x1
-   ->  Sort  (cost=72.61..72.66 rows=7 width=12)
+   ->  Sort  (cost=75.54..75.59 rows=7 width=12)
          Sort Key: bar1.x1
-         ->  Hash Join  (cost=3.85..72.17 rows=7 width=12)
-               Hash Cond: bar2.x2 = bar1.x2
-               ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..3.90 rows=10 width=4)
+         ->  Hash Join  (cost=3.85..75.11 rows=7 width=12)
+               Hash Cond: (bar2.x2 = bar1.x2)
+               ->  Redistribute Motion 3:3  (slice1; segments: 3)  (cost=0.00..3.90 rows=10 width=4)
                      Hash Key: bar2.x2
                      ->  Seq Scan on bar2  (cost=0.00..3.30 rows=10 width=4)
                ->  Hash  (cost=3.60..3.60 rows=7 width=8)
-                     ->  Redistribute Motion 3:3  (slice3; segments: 3)  (cost=0.00..3.60 rows=7 width=8)
+                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..3.60 rows=7 width=8)
                            Hash Key: bar1.x2
                            ->  Seq Scan on bar1  (cost=0.00..3.20 rows=7 width=8)
                SubPlan 1
-                 ->  Result  (cost=0.00..3.20 rows=1 width=0)
-                       One-Time Filter: $0 = $1
-                       ->  Result  (cost=3.20..3.21 rows=1 width=0)
-                             Filter: foo.x2 = $1 AND $0::double precision = random()
-                             ->  Materialize  (cost=3.20..3.21 rows=1 width=0)
-                                   ->  Broadcast Motion 3:3  (slice1; segments: 3)  (cost=0.00..3.20 rows=1 width=0)
-                                         ->  Seq Scan on foo  (cost=0.00..3.20 rows=1 width=0)
- Settings:  optimizer=off; optimizer_segments=3
- Optimizer status: Postgres query optimizer
-(23 rows)
+                 ->  Result  (cost=0.00..3.35 rows=10 width=4)
+                       One-Time Filter: (bar1.x2 = bar2.x2)
+                       Filter: ((foo.x2 = bar2.x2) AND ((bar1.x2)::double precision = random()))
+                       ->  Materialize  (cost=0.00..3.35 rows=10 width=4)
+                             ->  Broadcast Motion 3:3  (slice4; segments: 3)  (cost=0.00..3.30 rows=4 width=4)
+                                   ->  Seq Scan on foo  (cost=0.00..3.10 rows=4 width=4)
+ Optimizer: Postgres query optimizer
+(21 rows)
 
 select case when bar1.x2 = bar2.x2 then coalesce((select 1 from orca.foo where bar1.x2 = bar2.x2 and bar1.x2 = random() and foo.x2 = bar2.x2),0) else 1 end as col1, bar1.x1
 from orca.bar1 inner join orca.bar2 on (bar1.x2 = bar2.x2) order by bar1.x1; 
@@ -4322,27 +4320,7 @@ select 1 from orca.r group by ();
  ?column? 
 ----------
         1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-        1
-(21 rows)
+(1 row)
 
 select a,1 from orca.r group by rollup(a);
  a  | ?column? 
@@ -8493,6 +8471,12 @@ select sum(f1.b) from orca.fooh1 f1 group by f1.a;
    4
 (4 rows)
 
+select f1.a + 1 from fooh1 f1 group by f1.a+1 having sum(f1.a+1) + 1 > 20;
+ ?column? 
+----------
+        4
+(1 row)
+
 select 1 as one, f1.a from orca.fooh1 f1 group by f1.a having sum(f1.b) > 4;
  one | a 
 -----+---
@@ -8616,6 +8600,180 @@ select sum(f1.a+1)+avg(f1.a+1), sum(f1.a), sum(f1.a+1) from orca.fooh1 f1 group 
     12.0000000000000000 |   5 |  10
 (4 rows)
 
+--
+-- test algebrization of group by clause with subqueries
+--
+drop table if exists foo, bar, jazz;
+NOTICE:  table "jazz" does not exist, skipping
+create table foo (a int, b int, c int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table bar (d int, e int, f int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'd' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table jazz (g int, h int, j int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'g' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into foo values (1, 1, 1), (2, 2, 2), (3, 3, 3);
+insert into bar values (1, 1, 1), (2, 2, 2), (3, 3, 3);
+insert into jazz values (2, 2, 2);
+-- subquery with outer reference with aggfunc in target list
+select a, (select sum(e) from bar where foo.b = bar.f), b, count(*) from foo, jazz where foo.c = jazz.g group by b, a, h;
+ a | sum | b | count 
+---+-----+---+-------
+ 2 |   2 | 2 |     1
+(1 row)
+
+-- complex agg expr in subquery
+select foo.a, (select (foo.a + foo.b) * count(bar.e) from bar), b, count(*) from foo group by foo.a, foo.b, foo.a + foo.b;
+ a | ?column? | b | count 
+---+----------+---+-------
+ 2 |       12 | 2 |     1
+ 1 |        6 | 1 |     1
+ 3 |       18 | 3 |     1
+(3 rows)
+
+-- aggfunc over an outer reference in a subquery
+select (select sum(foo.a + bar.d) from bar) from foo group by a, b;
+ sum 
+-----
+   9
+  15
+  12
+(3 rows)
+
+-- complex expression of aggfunc over an outer reference in a subquery
+select (select sum(foo.a + bar.d) + 1 from bar) from foo group by a, b;
+ ?column? 
+----------
+       13
+       10
+       16
+(3 rows)
+
+-- aggrefs with multiple agglevelsup
+select (select (select sum(foo.a + bar.d) from jazz) from bar) from foo group by a, b;
+ERROR:  correlated subquery with skip-level correlations is not supported
+-- aggrefs with multiple agglevelsup in an expression
+select (select (select sum(foo.a + bar.d) * 2 from jazz) from bar) from foo group by a, b;
+ERROR:  correlated subquery with skip-level correlations is not supported
+-- nested group by
+select (select max(f) from bar where d = 1 group by a, e) from foo group by a;
+ max 
+-----
+   1
+   1
+   1
+(3 rows)
+
+-- cte with an aggfunc of outer ref
+select a, count(*), (with cte as (select min(d) dd from bar group by e) select max(a * dd) from cte) from foo group by a;
+ a | count | max 
+---+-------+-----
+ 1 |     1 |   3
+ 2 |     1 |   6
+ 3 |     1 |   9
+(3 rows)
+
+-- cte with an aggfunc of outer ref in an complex expression
+select a, count(*), (with cte as (select e, min(d) as dd from bar group by e) select max(a) * sum(dd) from cte) from foo group by a;
+ a | count | ?column? 
+---+-------+----------
+ 1 |     1 |        6
+ 2 |     1 |       12
+ 3 |     1 |       18
+(3 rows)
+
+-- subquery in group by
+select max(a) from foo group by (select e from bar where bar.e = foo.a);
+ max 
+-----
+   1
+   2
+   3
+(3 rows)
+
+-- nested subquery in group by
+select max(a) from foo group by (select g from jazz where foo.a = (select max(a) from foo where c = 1 group by b));
+ max 
+-----
+   1
+   3
+(2 rows)
+
+-- group by inside groupby inside group by ;S
+select max(a) from foo group by (select min(g) from jazz where foo.a = (select max(g) from jazz group by h) group by h);
+ max 
+-----
+   2
+   3
+(2 rows)
+
+-- cte subquery in group by
+select max(a) from foo group by b, (with cte as (select min(g) from jazz group by h) select a from cte);
+ max 
+-----
+   3
+   2
+   1
+(3 rows)
+
+-- group by subquery in order by
+select * from foo order by ((select min(bar.e + 1) * 2 from bar group by foo.a) - foo.a);
+ a | b | c 
+---+---+---
+ 3 | 3 | 3
+ 2 | 2 | 2
+ 1 | 1 | 1
+(3 rows)
+
+-- everything in the kitchen sink
+select max(b), (select foo.a * count(bar.e) from bar), (with cte as (select e, min(d) as dd from bar group by e) select max(a) * sum(dd) from cte), count(*) from foo group by foo.a, (select min(g) from jazz where foo.a = (select max(g) from jazz group by h) group by h), (with cte as (select min(g) from jazz group by h) select a from cte) order by ((select min(bar.e + 1) * 2 from bar group by foo.a) - foo.a);
+ max | ?column? | ?column? | count 
+-----+----------+----------+-------
+   3 |        9 |       18 |     1
+   2 |        6 |       12 |     1
+   1 |        3 |        6 |     1
+(3 rows)
+
+-- complex expression in group by & targetlist
+select b + (a+1) from foo group by b, a+1;
+ ?column? 
+----------
+        5
+        3
+        7
+(3 rows)
+
+-- subselects inside aggs
+SELECT  foo.b+1, avg (( SELECT bar.f FROM bar WHERE bar.d = foo.b)) AS t FROM foo GROUP BY foo.b;
+ ?column? |           t            
+----------+------------------------
+        3 |     2.0000000000000000
+        4 |     3.0000000000000000
+        2 | 1.00000000000000000000
+(3 rows)
+
+SELECT foo.b+1, sum( 1 + (SELECT bar.f FROM bar WHERE bar.d = ANY (SELECT jazz.g FROM jazz WHERE jazz.h = foo.b))) AS t FROM foo GROUP BY foo.b;
+ERROR:  correlated subquery with skip-level correlations is not supported
+select foo.b+1, sum((with cte as (select * from jazz) select 1 from cte where cte.h = foo.b)) as t FROM foo GROUP BY foo.b;
+ ?column? | t 
+----------+---
+        3 | 1
+        4 |  
+        2 |  
+(3 rows)
+
+-- ctes inside aggs
+select foo.b+1, sum((with cte as (select * from jazz) select 1 from cte cte1, cte cte2 where cte1.h = foo.b)) as t FROM foo GROUP BY foo.b;
+ ?column? | t 
+----------+---
+        3 | 1
+        4 |  
+        2 |  
+(3 rows)
+
+drop table foo, bar, jazz;
 create table orca.t77(C952 text) WITH (compresstype=zlib,compresslevel=2,appendonly=true,blocksize=393216,checksum=true);
 NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c952' as the Greenplum Database data distribution key for this table.
 HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
@@ -10418,40 +10576,21 @@ set log_statement='none';
 set log_min_duration_statement=-1;
 set client_min_messages='log';
 explain select count(*) from foo group by cube(a,b);
-                                                                   QUERY PLAN                                                                   
-------------------------------------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice3; segments: 3)  (cost=10128.79..20306.02 rows=40897 width=28)
-   ->  Append  (cost=10128.79..20306.02 rows=13633 width=28)
-         ->  HashAggregate  (cost=10128.79..10408.61 rows=9328 width=28)
-               Group Key: "rollup".unnamed_attr_2, "rollup".unnamed_attr_1, "rollup"."grouping", "rollup"."group_id"
-               ->  Subquery Scan on "rollup"  (cost=8552.10..10074.98 rows=1435 width=28)
-                     ->  Redistribute Motion 3:3  (slice1; segments: 3)  (cost=8552.10..10031.93 rows=1435 width=28)
-                           Hash Key: rollup_1.unnamed_attr_2, rollup_1.unnamed_attr_1, (Grouping), group_id()
-                           ->  GroupAggregate  (cost=8552.10..9945.83 rows=1435 width=28)
-                                 Group Key: rollup_1."grouping", rollup_1."group_id"
-                                 ->  Subquery Scan on rollup_1  (cost=8552.10..9822.06 rows=2153 width=28)
-                                       ->  GroupAggregate  (cost=8552.10..9757.49 rows=2153 width=28)
-                                             Group Key: rollup_2.unnamed_attr_2, rollup_2."grouping", rollup_2."group_id"
-                                             ->  Subquery Scan on rollup_2  (cost=8552.10..9585.30 rows=2870 width=28)
-                                                   ->  GroupAggregate  (cost=8552.10..9499.20 rows=2870 width=28)
-                                                         Group Key: b, a
-                                                         ->  Sort  (cost=8552.10..8767.35 rows=28700 width=8)
-                                                               Sort Key: b, a
-                                                               ->  Shared Scan (share slice:id 1:0)  (cost=1391.50..1494.60 rows=28700 width=8)
-                                                                     ->  Materialize  (cost=0.00..1391.50 rows=28700 width=8)
-                                                                           ->  Seq Scan on foo  (cost=0.00..961.00 rows=28700 width=8)
-         ->  HashAggregate  (cost=9639.11..9768.26 rows=4305 width=28)
-               Group Key: rollup_3.unnamed_attr_1, rollup_3.unnamed_attr_2, rollup_3."grouping", rollup_3."group_id"
-               ->  Subquery Scan on rollup_3  (cost=8552.10..9585.30 rows=1435 width=28)
-                     ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=8552.10..9542.25 rows=1435 width=28)
-                           Hash Key: a, b, (Grouping), group_id()
-                           ->  GroupAggregate  (cost=8552.10..9456.15 rows=1435 width=28)
-                                 Group Key: a
-                                 ->  Sort  (cost=8552.10..8767.35 rows=28700 width=8)
-                                       Sort Key: a, b
-                                       ->  Shared Scan (share slice:id 2:0)  (cost=1391.50..1494.60 rows=28700 width=8)
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
+ GroupAggregate  (cost=8018.50..16794.97 rows=10611 width=16)
+   Group Key: a, b
+   Group Key: a
+   Group Key: ()
+   Sort Key: b
+     Group Key: b
+   ->  Gather Motion 3:1  (slice1; segments: 3)  (cost=8018.50..8233.75 rows=86100 width=8)
+         Merge Key: a, b
+         ->  Sort  (cost=8018.50..8233.75 rows=28700 width=8)
+               Sort Key: a, b
+               ->  Seq Scan on foo  (cost=0.00..961.00 rows=28700 width=8)
  Optimizer: Postgres query optimizer
-(31 rows)
+(12 rows)
 
 reset client_min_messages;
 reset log_statement;
@@ -10718,6 +10857,27 @@ select c1 from t_outer where not c1 =all (select c2 from t_inner);
 (10 rows)
 
 reset optimizer_enable_streaming_material;
+-- Ensure that ORCA rescans the subquery in case of skip-level correlation with
+-- materialization
+drop table if exists wst0, wst1, wst2;
+NOTICE:  table "wst0" does not exist, skipping
+NOTICE:  table "wst1" does not exist, skipping
+NOTICE:  table "wst2" does not exist, skipping
+create table wst0(a0 int, b0 int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a0' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table wst1(a1 int, b1 int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a1' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+create table wst2(a2 int, b2 int);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a2' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+insert into wst0 select i, i from generate_series(1,10) i;
+insert into wst1 select i, i from generate_series(1,10) i;
+insert into wst2 select i, i from generate_series(1,10) i;
+-- NB: the rank() is need to force materialization (via Sort) in the subplan
+select count(*) from wst0 where exists (select 1, rank() over (order by wst1.a1) from wst1 where a1 = (select b2 from wst2 where a0=a2+5));
+ERROR:  correlated subquery with skip-level correlations is not supported
 --
 -- Test to ensure sane behavior when DML queries are optimized by ORCA by
 -- enforcing a non-master gather motion, controlled by
@@ -10943,52 +11103,49 @@ INSERT INTO onetimefilter2 SELECT i, i FROM generate_series(1,10)i;
 ANALYZE onetimefilter1;
 ANALYZE onetimefilter2;
 EXPLAIN WITH abc AS (SELECT onetimefilter1.a, onetimefilter1.b FROM onetimefilter1, onetimefilter2 WHERE onetimefilter1.a=onetimefilter2.a) SELECT (SELECT 1 FROM abc WHERE f1.b = f2.b LIMIT 1), COALESCE((SELECT 2 FROM abc WHERE f1.a=random() AND f1.a=2), 0), (SELECT b FROM abc WHERE b=f1.b) FROM onetimefilter1 f1, onetimefilter2 f2 WHERE f1.b = f2.b;
-                                                               QUERY PLAN                                                               
-----------------------------------------------------------------------------------------------------------------------------------------
- Gather Motion 3:1  (slice6; segments: 3)  (cost=3.43..12.31 rows=10 width=12)
-   ->  Hash Join  (cost=3.43..12.31 rows=4 width=12)
+                                                            QUERY PLAN                                                            
+----------------------------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice3; segments: 3)  (cost=3.43..16.31 rows=10 width=12)
+   ->  Hash Join  (cost=3.43..16.31 rows=4 width=12)
          Hash Cond: (f1.b = f2.b)
-         ->  Redistribute Motion 3:3  (slice4; segments: 3)  (cost=0.00..3.30 rows=4 width=8)
+         ->  Redistribute Motion 3:3  (slice1; segments: 3)  (cost=0.00..3.30 rows=4 width=8)
                Hash Key: f1.b
                ->  Seq Scan on onetimefilter1 f1  (cost=0.00..3.10 rows=4 width=8)
          ->  Hash  (cost=3.30..3.30 rows=4 width=4)
-               ->  Redistribute Motion 3:3  (slice5; segments: 3)  (cost=0.00..3.30 rows=4 width=4)
+               ->  Redistribute Motion 3:3  (slice2; segments: 3)  (cost=0.00..3.30 rows=4 width=4)
                      Hash Key: f2.b
                      ->  Seq Scan on onetimefilter2 f2  (cost=0.00..3.10 rows=4 width=4)
-         SubPlan 1  (slice6; segments: 3)
+         SubPlan 1
            ->  Limit  (cost=0.00..0.04 rows=1 width=0)
-                 ->  Limit  (cost=0.00..0.02 rows=1 width=0)
-                       ->  Result  (cost=0.00..0.20 rows=4 width=0)
-                             One-Time Filter: (f1.b = f2.b)
-                             ->  Result  (cost=6.51..6.77 rows=4 width=8)
-                                   ->  Materialize  (cost=6.51..6.77 rows=4 width=8)
-                                         ->  Broadcast Motion 3:3  (slice1; segments: 3)  (cost=6.51..6.72 rows=4 width=8)
-                                               ->  Shared Scan (share slice:id 1:0)  (cost=6.51..6.72 rows=4 width=8)
-                                                     ->  Materialize  (cost=3.23..6.51 rows=4 width=8)
-                                                           ->  Hash Join  (cost=3.23..6.46 rows=4 width=8)
-                                                                 Hash Cond: (onetimefilter1.a = onetimefilter2.a)
-                                                                 ->  Seq Scan on onetimefilter1  (cost=0.00..3.10 rows=4 width=8)
-                                                                 ->  Hash  (cost=3.10..3.10 rows=4 width=4)
-                                                                       ->  Seq Scan on onetimefilter2  (cost=0.00..3.10 rows=4 width=4)
-         SubPlan 2  (slice6; segments: 3)
-           ->  Result  (cost=0.00..0.28 rows=1 width=0)
+                 ->  Result  (cost=0.00..0.45 rows=10 width=0)
+                       One-Time Filter: (f1.b = f2.b)
+                       ->  Materialize  (cost=0.00..0.45 rows=10 width=0)
+                             ->  Broadcast Motion 3:3  (slice4; segments: 3)  (cost=0.00..0.40 rows=4 width=0)
+                                   ->  Subquery Scan on abc  (cost=0.00..0.20 rows=4 width=0)
+                                         ->  Shared Scan (share slice:id 4:0)  (cost=6.51..6.72 rows=4 width=8)
+                                               ->  Materialize  (cost=3.23..6.51 rows=4 width=8)
+                                                     ->  Hash Join  (cost=3.23..6.46 rows=4 width=8)
+                                                           Hash Cond: (onetimefilter1.a = onetimefilter2.a)
+                                                           ->  Seq Scan on onetimefilter1  (cost=0.00..3.10 rows=4 width=8)
+                                                           ->  Hash  (cost=3.10..3.10 rows=4 width=4)
+                                                                 ->  Seq Scan on onetimefilter2  (cost=0.00..3.10 rows=4 width=4)
+         SubPlan 2
+           ->  Result  (cost=0.00..0.45 rows=10 width=0)
                  One-Time Filter: (f1.a = 2)
-                 ->  Subquery Scan on abc  (cost=0.00..0.28 rows=1 width=0)
-                       Filter: ((f1.a)::double precision = random())
-                       ->  Result  (cost=6.51..6.77 rows=4 width=8)
-                             ->  Materialize  (cost=6.51..6.77 rows=4 width=8)
-                                   ->  Broadcast Motion 3:3  (slice2; segments: 3)  (cost=6.51..6.72 rows=4 width=8)
-                                         ->  Shared Scan (share slice:id 2:0)  (cost=6.51..6.72 rows=4 width=8)
-         SubPlan 3  (slice6; segments: 3)
-           ->  Subquery Scan on abc_1  (cost=0.00..0.22 rows=1 width=4)
-                 Filter: (abc_1.b = f1.b)
-                 ->  Result  (cost=6.51..6.77 rows=4 width=8)
-                       ->  Materialize  (cost=6.51..6.77 rows=4 width=8)
-                             ->  Broadcast Motion 3:3  (slice3; segments: 3)  (cost=6.51..6.72 rows=4 width=8)
-                                   ->  Shared Scan (share slice:id 3:0)  (cost=6.51..6.72 rows=4 width=8)
- Planning time: 0.276 ms
+                 Filter: ((f1.a)::double precision = random())
+                 ->  Materialize  (cost=0.00..0.45 rows=10 width=0)
+                       ->  Broadcast Motion 3:3  (slice5; segments: 3)  (cost=0.00..0.40 rows=4 width=0)
+                             ->  Subquery Scan on abc_1  (cost=0.00..0.20 rows=4 width=0)
+                                   ->  Shared Scan (share slice:id 5:0)  (cost=6.51..6.72 rows=4 width=8)
+         SubPlan 3
+           ->  Result  (cost=0.00..0.45 rows=10 width=4)
+                 Filter: (abc_2.b = f1.b)
+                 ->  Materialize  (cost=0.00..0.45 rows=10 width=4)
+                       ->  Broadcast Motion 3:3  (slice6; segments: 3)  (cost=0.00..0.40 rows=4 width=4)
+                             ->  Subquery Scan on abc_2  (cost=0.00..0.20 rows=4 width=4)
+                                   ->  Shared Scan (share slice:id 6:0)  (cost=6.51..6.72 rows=4 width=8)
  Optimizer: Postgres query optimizer
-(43 rows)
+(40 rows)
 
 WITH abc AS (SELECT onetimefilter1.a, onetimefilter1.b FROM onetimefilter1, onetimefilter2 WHERE onetimefilter1.a=onetimefilter2.a) SELECT (SELECT 1 FROM abc WHERE f1.b = f2.b LIMIT 1), COALESCE((SELECT 2 FROM abc WHERE f1.a=random() AND f1.a=2), 0), (SELECT b FROM abc WHERE b=f1.b) FROM onetimefilter1 f1, onetimefilter2 f2 WHERE f1.b = f2.b;
  ?column? | coalesce | b  
@@ -11004,4 +11161,312 @@ WITH abc AS (SELECT onetimefilter1.a, onetimefilter1.b FROM onetimefilter1, onet
         1 |        0 |  9
         1 |        0 | 10
 (10 rows)
+
+-- full joins with predicates
+DROP TABLE IF EXISTS ffoo, fbar;
+NOTICE:  table "ffoo" does not exist, skipping
+NOTICE:  table "fbar" does not exist, skipping
+CREATE TABLE ffoo (a, b) AS (VALUES (1, 2), (2, 3), (4, 5), (5, 6), (6, 7)) DISTRIBUTED BY (a);
+CREATE TABLE fbar (c, d) AS (VALUES (1, 42), (2, 43), (4, 45), (5, 46)) DISTRIBUTED BY (c);
+SELECT d FROM ffoo FULL OUTER JOIN fbar ON a = c WHERE b BETWEEN 5 and 9;
+ d  
+----
+ 46
+   
+ 45
+(3 rows)
+
+-- test index left outer joins on bitmap and btree indexes on partitioned tables with and without select clause
+DROP TABLE IF EXISTS touter, tinner;
+NOTICE:  table "touter" does not exist, skipping
+NOTICE:  table "tinner" does not exist, skipping
+CREATE TABLE touter(a int, b int) DISTRIBUTED BY (a);
+CREATE TABLE tinnerbitmap(a int, b int) DISTRIBUTED BY (a) PARTITION BY range(b) (start (0) end (6) every (3));
+NOTICE:  CREATE TABLE will create partition "tinnerbitmap_1_prt_1" for table "tinnerbitmap"
+NOTICE:  CREATE TABLE will create partition "tinnerbitmap_1_prt_2" for table "tinnerbitmap"
+CREATE TABLE tinnerbtree(a int, b int) DISTRIBUTED BY (a) PARTITION BY range(b) (start (0) end (6) every (3));
+NOTICE:  CREATE TABLE will create partition "tinnerbtree_1_prt_1" for table "tinnerbtree"
+NOTICE:  CREATE TABLE will create partition "tinnerbtree_1_prt_2" for table "tinnerbtree"
+INSERT INTO touter SELECT i, i%6 FROM generate_series(1,10) i;
+INSERT INTO tinnerbitmap select i, i%6 FROM generate_series(1,1000) i;
+INSERT INTO tinnerbtree select i, i%6 FROM generate_series(1,1000) i;
+CREATE INDEX tinnerbitmap_ix ON tinnerbitmap USING bitmap(a);
+CREATE INDEX tinnerbtree_ix ON tinnerbtree USING btree(a);
+SELECT * FROM touter LEFT JOIN tinnerbitmap ON touter.a = tinnerbitmap.a;
+ a  | b | a  | b 
+----+---+----+---
+  1 | 1 |  1 | 1
+  6 | 0 |  6 | 0
+  5 | 5 |  5 | 5
+  9 | 3 |  9 | 3
+ 10 | 4 | 10 | 4
+  2 | 2 |  2 | 2
+  7 | 1 |  7 | 1
+  8 | 2 |  8 | 2
+  3 | 3 |  3 | 3
+  4 | 4 |  4 | 4
+(10 rows)
+
+SELECT * FROM touter LEFT JOIN tinnerbitmap ON touter.a = tinnerbitmap.a AND tinnerbitmap.b=10;
+ a  | b | a | b 
+----+---+---+---
+  2 | 2 |   |  
+  3 | 3 |   |  
+  4 | 4 |   |  
+  7 | 1 |   |  
+  8 | 2 |   |  
+  1 | 1 |   |  
+  5 | 5 |   |  
+  6 | 0 |   |  
+  9 | 3 |   |  
+ 10 | 4 |   |  
+(10 rows)
+
+SELECT * FROM touter LEFT JOIN tinnerbtree ON touter.a = tinnerbtree.a;
+ a  | b | a  | b 
+----+---+----+---
+  1 | 1 |  1 | 1
+  6 | 0 |  6 | 0
+  5 | 5 |  5 | 5
+  9 | 3 |  9 | 3
+ 10 | 4 | 10 | 4
+  2 | 2 |  2 | 2
+  7 | 1 |  7 | 1
+  8 | 2 |  8 | 2
+  3 | 3 |  3 | 3
+  4 | 4 |  4 | 4
+(10 rows)
+
+SELECT * FROM touter LEFT JOIN tinnerbtree ON touter.a = tinnerbtree.a AND tinnerbtree.b=10;
+ a  | b | a | b 
+----+---+---+---
+  1 | 1 |   |  
+  5 | 5 |   |  
+  6 | 0 |   |  
+  9 | 3 |   |  
+ 10 | 4 |   |  
+  2 | 2 |   |  
+  3 | 3 |   |  
+  4 | 4 |   |  
+  7 | 1 |   |  
+  8 | 2 |   |  
+(10 rows)
+
+-- test subplan in a qual under dynamic scan
+CREATE TABLE ds_part ( a INT, b INT, c INT) PARTITION BY RANGE(c)( START(1) END (10) EVERY (2), DEFAULT PARTITION deflt);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+NOTICE:  CREATE TABLE will create partition "ds_part_1_prt_deflt" for table "ds_part"
+NOTICE:  CREATE TABLE will create partition "ds_part_1_prt_2" for table "ds_part"
+NOTICE:  CREATE TABLE will create partition "ds_part_1_prt_3" for table "ds_part"
+NOTICE:  CREATE TABLE will create partition "ds_part_1_prt_4" for table "ds_part"
+NOTICE:  CREATE TABLE will create partition "ds_part_1_prt_5" for table "ds_part"
+NOTICE:  CREATE TABLE will create partition "ds_part_1_prt_6" for table "ds_part"
+CREATE TABLE non_part1 (c INT);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'c' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+CREATE TABLE non_part2 (e INT, f INT);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'e' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO ds_part SELECT i, i, i FROM generate_series (1, 1000)i; 
+INSERT INTO non_part1 SELECT i FROM generate_series(1, 100)i; 
+INSERT INTO non_part2 SELECT i, i FROM generate_series(1, 100)i;
+SET optimizer_enforce_subplans TO ON;
+analyze ds_part;
+analyze non_part1;
+analyze non_part2;
+SELECT * FROM ds_part, non_part2 WHERE ds_part.c = non_part2.e AND non_part2.f = 10 AND a IN ( SELECT b + 1 FROM non_part1);
+ a | b | c | e | f 
+---+---+---+---+---
+(0 rows)
+
+explain SELECT * FROM ds_part, non_part2 WHERE ds_part.c = non_part2.e AND non_part2.f = 10 AND a IN ( SELECT b + 1 FROM non_part1);
+                                                  QUERY PLAN                                                   
+---------------------------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice3; segments: 3)  (cost=10000000004.33..10000000039.13 rows=7 width=20)
+   ->  Nested Loop Semi Join  (cost=10000000004.33..10000000039.13 rows=3 width=20)
+         ->  Hash Join  (cost=4.33..28.40 rows=2 width=20)
+               Hash Cond: (ds_part_1_prt_deflt.c = non_part2.e)
+               ->  Append  (cost=0.00..24.00 rows=2 width=12)
+                     ->  Result  (cost=0.00..17.87 rows=1 width=12)
+                           One-Time Filter: PartSelected
+                           ->  Seq Scan on ds_part_1_prt_deflt  (cost=0.00..17.87 rows=1 width=12)
+                                 Filter: (a = (b + 1))
+                     ->  Result  (cost=0.00..2.03 rows=1 width=12)
+                           One-Time Filter: PartSelected
+                           ->  Seq Scan on ds_part_1_prt_2  (cost=0.00..2.03 rows=1 width=12)
+                                 Filter: (a = (b + 1))
+                     ->  Result  (cost=0.00..1.03 rows=1 width=12)
+                           One-Time Filter: PartSelected
+                           ->  Seq Scan on ds_part_1_prt_3  (cost=0.00..1.03 rows=1 width=12)
+                                 Filter: (a = (b + 1))
+                     ->  Result  (cost=0.00..1.03 rows=1 width=12)
+                           One-Time Filter: PartSelected
+                           ->  Seq Scan on ds_part_1_prt_4  (cost=0.00..1.03 rows=1 width=12)
+                                 Filter: (a = (b + 1))
+                     ->  Result  (cost=0.00..1.03 rows=1 width=12)
+                           One-Time Filter: PartSelected
+                           ->  Seq Scan on ds_part_1_prt_5  (cost=0.00..1.03 rows=1 width=12)
+                                 Filter: (a = (b + 1))
+                     ->  Result  (cost=0.00..1.01 rows=1 width=12)
+                           One-Time Filter: PartSelected
+                           ->  Seq Scan on ds_part_1_prt_6  (cost=0.00..1.01 rows=1 width=12)
+                                 Filter: (a = (b + 1))
+               ->  Hash  (cost=4.29..4.29 rows=1 width=8)
+                     ->  Partition Selector for ds_part (dynamic scan id: 1)  (cost=0.00..4.29 rows=1 width=8)
+                           Filter: non_part2.e
+                           ->  Broadcast Motion 3:3  (slice1; segments: 3)  (cost=0.00..4.29 rows=1 width=8)
+                                 ->  Seq Scan on non_part2  (cost=0.00..4.25 rows=1 width=8)
+                                       Filter: (f = 10)
+         ->  Materialize  (cost=0.00..9.50 rows=100 width=0)
+               ->  Broadcast Motion 3:3  (slice2; segments: 3)  (cost=0.00..8.00 rows=100 width=0)
+                     ->  Seq Scan on non_part1  (cost=0.00..4.00 rows=34 width=0)
+ Optimizer: Postgres query optimizer
+(39 rows)
+
+SELECT *, a IN ( SELECT b + 1 FROM non_part1) FROM ds_part, non_part2 WHERE ds_part.c = non_part2.e AND non_part2.f = 10 AND a IN ( SELECT b FROM non_part1);
+ a  | b  | c  | e  | f  | ?column? 
+----+----+----+----+----+----------
+ 10 | 10 | 10 | 10 | 10 | f
+(1 row)
+
+CREATE INDEX ds_idx ON ds_part(a);
+analyze ds_part;
+SELECT *, a IN ( SELECT b + 1 FROM non_part1) FROM ds_part, non_part2 WHERE ds_part.c = non_part2.e AND non_part2.f = 10 AND a IN ( SELECT b FROM non_part1);
+ a  | b  | c  | e  | f  | ?column? 
+----+----+----+----+----+----------
+ 10 | 10 | 10 | 10 | 10 | f
+(1 row)
+
+RESET optimizer_enforce_subplans;
+-- implied predicate must be generated for the type cast(ident) scalar array cmp const array
+CREATE TABLE varchar_sc_array_cmp(a varchar);
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO varchar_sc_array_cmp VALUES ('a'), ('b'), ('c'), ('d');
+EXPLAIN SELECT * FROM varchar_sc_array_cmp t1, varchar_sc_array_cmp t2 where t1.a = t2.a and t1.a in ('b', 'c');
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
+ Gather Motion 2:1  (slice1; segments: 2)  (cost=3.07..6.17 rows=4 width=4)
+   ->  Hash Join  (cost=3.07..6.17 rows=2 width=4)
+         Hash Cond: ((t1.a)::text = (t2.a)::text)
+         ->  Seq Scan on varchar_sc_array_cmp t1  (cost=0.00..3.05 rows=1 width=2)
+               Filter: ((a)::text = ANY ('{b,c}'::text[]))
+         ->  Hash  (cost=3.05..3.05 rows=1 width=2)
+               ->  Seq Scan on varchar_sc_array_cmp t2  (cost=0.00..3.05 rows=1 width=2)
+                     Filter: ((a)::text = ANY ('{b,c}'::text[]))
+ Optimizer: Postgres query optimizer
+(9 rows)
+
+SELECT * FROM varchar_sc_array_cmp t1, varchar_sc_array_cmp t2 where t1.a = t2.a and t1.a in ('b', 'c');
+ a | a 
+---+---
+ c | c
+ b | b
+(2 rows)
+
+SET optimizer_array_constraints=on;
+EXPLAIN SELECT * FROM varchar_sc_array_cmp t1, varchar_sc_array_cmp t2 where t1.a = t2.a and (t1.a in ('b', 'c') OR t1.a = 'a');
+                                          QUERY PLAN                                          
+----------------------------------------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)  (cost=3.09..6.18 rows=4 width=4)
+   ->  Hash Join  (cost=3.09..6.18 rows=2 width=4)
+         Hash Cond: ((t2.a)::text = (t1.a)::text)
+         ->  Seq Scan on varchar_sc_array_cmp t2  (cost=0.00..3.04 rows=2 width=2)
+         ->  Hash  (cost=3.06..3.06 rows=1 width=2)
+               ->  Seq Scan on varchar_sc_array_cmp t1  (cost=0.00..3.06 rows=1 width=2)
+                     Filter: (((a)::text = ANY ('{b,c}'::text[])) OR ((a)::text = 'a'::text))
+ Optimizer: Postgres query optimizer
+(8 rows)
+
+SELECT * FROM varchar_sc_array_cmp t1, varchar_sc_array_cmp t2 where t1.a = t2.a and (t1.a in ('b', 'c') OR t1.a = 'a');
+ a | a 
+---+---
+ b | b
+ a | a
+ c | c
+(3 rows)
+
+DROP TABLE varchar_sc_array_cmp;
+-- table constraints on nullable columns
+-- start_ignore
+DROP TABLE IF EXISTS tc0, tc1, tc2, tc3, tc4;
+NOTICE:  table "tc0" does not exist, skipping
+NOTICE:  table "tc1" does not exist, skipping
+NOTICE:  table "tc2" does not exist, skipping
+NOTICE:  table "tc3" does not exist, skipping
+NOTICE:  table "tc4" does not exist, skipping
+-- end_ignore
+CREATE TABLE tc0 (a int check (a = 5));
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO tc0 VALUES (NULL);
+-- FIXME: Planner gives wrong result
+SELECT * from tc0 where a IS NULL;
+ a 
+---
+(0 rows)
+
+CREATE TABLE tc1 (a int check (a between 1 and 2 or a != 3 and a > 5));
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO tc1 VALUES (NULL);
+SELECT * from tc1 where a IS NULL;
+ a 
+---
+  
+(1 row)
+
+CREATE TABLE tc2 (a int check (a in (1,2)));
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO tc2 VALUES (NULL);
+SELECT * from tc2 where a IS NULL;
+ a 
+---
+  
+(1 row)
+
+set optimizer_array_constraints = on;
+CREATE TABLE tc3 (a int check (a = ANY (ARRAY[1,2])));
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO tc3 VALUES (NULL);
+SELECT * from tc3 where a IS NULL;
+ a 
+---
+  
+(1 row)
+
+reset optimizer_array_constraints;
+CREATE TABLE tc4 (a int, b int, check(a + b > 1 and a = b));
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'a' as the Greenplum Database data distribution key for this table.
+HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
+INSERT INTO tc4 VALUES(NULL, NULL);
+SELECT * from tc4 where a IS NULL;
+ a | b 
+---+---
+   |  
+(1 row)
+
+-- citext fallback
+CREATE EXTENSION IF NOT EXISTS citext;
+drop table if exists tt, tc;
+NOTICE:  table "tt" does not exist, skipping
+NOTICE:  table "tc" does not exist, skipping
+create table tc (a int, c citext) distributed by (a);
+create table tt (b int, v varchar) distributed by (v);
+insert into tc values (1, 'a'), (1, 'A');
+insert into tt values (1, 'a'), (1, 'A');
+insert into tc values (1, 'b'), (1, 'B');
+insert into tt values (1, 'b'), (1, 'B');
+-- expected fall back to the planner
+select * from tc, tt where c = v;
+ a | c | b | v 
+---+---+---+---
+ 1 | a | 1 | a
+ 1 | A | 1 | A
+ 1 | B | 1 | B
+ 1 | b | 1 | b
+(4 rows)
 

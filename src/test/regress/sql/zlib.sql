@@ -3,10 +3,6 @@
 -- The test file is called 'zlib' for historical reasons. GPDB uses Zstandard
 -- rather than zlib for temporary file compression, nowadays.
 
--- start_ignore
-CREATE EXTENSION IF NOT EXISTS gp_inject_fault;
--- end_ignore
-
 -- If the server is built without libzstd (configure --without-zstd), this
 -- fails with error "workfile compresssion is not supported by this build".
 -- The tests are less interesting in that case, but they should still pass.
@@ -84,5 +80,6 @@ select gp_inject_fault('workfile_creation_failure', 'status', 2);
 drop function FuncA();
 drop table test_zlib;
 drop table test_zlib_t1;
+drop table test_zlib_hashjoin;
 
 select gp_inject_fault('workfile_creation_failure', 'reset', 2);

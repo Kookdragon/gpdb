@@ -51,7 +51,7 @@
         are specialized needs, such as legacy assumptions about ordering of object keys.</p>
       <section>
         <title>About Unicode Characters in JSON Data</title>
-        <p>The <xref href="http://rfc7159.net/rfc7159" format="html" scope="external">RFC
+        <p>The <xref href="https://tools.ietf.org/html/rfc7159" format="html" scope="external">RFC
             7159</xref> document permits JSON strings to contain Unicode escape sequences denoted by
               <codeph>\u<varname>XXXX</varname></codeph>. However, Greenplum Database allows only
           one character set encoding per database. It is not possible for the <codeph>json</codeph>
@@ -241,7 +241,7 @@ SELECT '[1, 2, 3]'::jsonb @> '[1, 2, 2]'::jsonb;
 
 -- The object with a single pair on the right side is contained
 -- within the object on the left side:
-SELECT '{"product": "Greenplum", "version": "6.0.0", "jsonb":true}'::jsonb @> '{"version":"6.0.0"}'::jsonb;
+SELECT '{"product": "Greenplum", "version": "7.0.0", "jsonb":true}'::jsonb @> '{"version":"7.0.0"}'::jsonb;
 
 -- The array on the right side is <b>not</b> considered contained within the
 -- array on the left, even though a similar array is nested within it:
@@ -850,7 +850,7 @@ Array with n elements > array with n - 1 elements</pre>
           as <codeph>to_json</codeph> except for offering a pretty-printing option. The behavior
           described for <codeph>to_json</codeph> likewise applies to each individual value converted
           by the other JSON creation functions.</note>
-        <note>The <xref href="../../../ref_guide/modules/hstore.xml#topic_vcn_jkq_1bb">hstore
+        <note>The <xref href="../../../ref_guide/modules/hstore.xml">hstore
             module</xref> contains functions that cast from <codeph>hstore</codeph> to
             <codeph>json</codeph>, so that <codeph>hstore</codeph> values converted via the JSON
           creation functions will be represented as JSON objects, not as primitive string

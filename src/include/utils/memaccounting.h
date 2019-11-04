@@ -96,7 +96,6 @@ typedef enum MemoryOwnerType
 	MEMORY_OWNER_TYPE_Parser,
 	MEMORY_OWNER_TYPE_Planner,
 	MEMORY_OWNER_TYPE_PlannerHook,
-	MEMORY_OWNER_TYPE_Optimizer,
 	MEMORY_OWNER_TYPE_Dispatcher,
 	MEMORY_OWNER_TYPE_Serializer,
 	MEMORY_OWNER_TYPE_Deserializer,
@@ -110,6 +109,7 @@ typedef enum MemoryOwnerType
 	MEMORY_OWNER_TYPE_Exec_BitmapAnd,
 	MEMORY_OWNER_TYPE_Exec_BitmapOr,
 	MEMORY_OWNER_TYPE_Exec_SeqScan,
+	MEMORY_OWNER_TYPE_Exec_SampleScan,
 	MEMORY_OWNER_TYPE_Exec_DynamicSeqScan,
 	MEMORY_OWNER_TYPE_Exec_ExternalScan,
 	MEMORY_OWNER_TYPE_Exec_IndexScan,
@@ -231,17 +231,11 @@ MemoryAccounting_DeclareDone(void);
 extern uint64
 MemoryAccounting_RequestQuotaIncrease(void);
 
-extern MemoryAccountExplain *
-MemoryAccounting_ExplainCurrentOptimizerAccountInfo(void);
-
 extern MemoryAccountIdType
 MemoryAccounting_CreateMainExecutor(void);
 
 extern MemoryAccountIdType
 MemoryAccounting_GetOrCreateNestedExecutorAccount(void);
-
-extern MemoryAccountIdType
-MemoryAccounting_GetOrCreateOptimizerAccount(void);
 
 /*
  * MemoryAccounting_GetOrCreatePlannerAccount creates a memory account for

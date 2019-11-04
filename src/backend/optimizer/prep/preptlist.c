@@ -16,7 +16,7 @@
  *
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present Pivotal Software, Inc.
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -105,9 +105,9 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 		if (rc->rti != rc->prti)
 			continue;
 
-		if (rc->markType != ROW_MARK_COPY)
+		if (rc->allMarkTypes & ~(1 << ROW_MARK_COPY))
 		{
-			/* It's a regular table, so fetch its TID */
+			/* Need to fetch TID */
 			var = makeVar(rc->rti,
 						  SelfItemPointerAttributeNumber,
 						  TIDOID,
@@ -120,32 +120,32 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 								  pstrdup(resname),
 								  true);
 			tlist = lappend(tlist, tle);
-
-			/* if parent of inheritance tree, need the tableoid too */
-			if (rc->isParent)
-			{
-				var = makeVar(rc->rti,
-							  TableOidAttributeNumber,
-							  OIDOID,
-							  -1,
-							  InvalidOid,
-							  0);
-				snprintf(resname, sizeof(resname), "tableoid%u", rc->rowmarkId);
-				tle = makeTargetEntry((Expr *) var,
-									  list_length(tlist) + 1,
-									  pstrdup(resname),
-									  true);
-				tlist = lappend(tlist, tle);
-			}
 		}
-		else
+		if (rc->allMarkTypes & (1 << ROW_MARK_COPY))
 		{
-			/* Not a table, so we need the whole row as a junk var */
+			/* Need the whole row as a junk var */
 			var = makeWholeRowVar(rt_fetch(rc->rti, range_table),
 								  rc->rti,
 								  0,
 								  false);
 			snprintf(resname, sizeof(resname), "wholerow%u", rc->rowmarkId);
+			tle = makeTargetEntry((Expr *) var,
+								  list_length(tlist) + 1,
+								  pstrdup(resname),
+								  true);
+			tlist = lappend(tlist, tle);
+		}
+
+		/* If parent of inheritance tree, always fetch the tableoid too. */
+		if (rc->isParent)
+		{
+			var = makeVar(rc->rti,
+						  TableOidAttributeNumber,
+						  OIDOID,
+						  -1,
+						  InvalidOid,
+						  0);
+			snprintf(resname, sizeof(resname), "tableoid%u", rc->rowmarkId);
 			tle = makeTargetEntry((Expr *) var,
 								  list_length(tlist) + 1,
 								  pstrdup(resname),
@@ -193,6 +193,19 @@ preprocess_targetlist(PlannerInfo *root, List *tlist)
 
 	return tlist;
 }
+
+/*
+ * preprocess_onconflict_targetlist
+ *	  Process ON CONFLICT SET targetlist.
+ *
+ *	  Returns the new targetlist.
+ */
+List *
+preprocess_onconflict_targetlist(PlannerInfo *root, List *tlist, int result_relation, List *range_table)
+{
+	return expand_targetlist(root, tlist, CMD_UPDATE, result_relation, range_table);
+}
+
 
 /*****************************************************************************
  *
@@ -377,12 +390,13 @@ expand_targetlist(PlannerInfo *root, List *tlist, int command_type,
 	/*
 	 * If an UPDATE can move the tuples from one segment to another, we will
 	 * need to create a Split Update node for it. The node is created later
-	 * in the planning, but if it's needed, we must ensure that the target
-	 * list contains all the original values of each distribution key column,
-	 * because the Split Update needs them as input. The old distribution
-	 * key columns come in the target list after all the new values, and
-	 * before the 'ctid' and other resjunk columns. (The logic in
-	 * process_targetlist_for_splitupdate() relies on that order.)
+	 * in the planning, but if it's needed, and the table has OIDs, we must
+	 * ensure that the target list contains the old OID so that the Split
+	 * Update can copy it to the new tuple.
+	 *
+	 * GPDB_96_MERGE_FIXME: we used to copy all old distribution key columns,
+	 * but we only need this for the OID now. Can we desupport Split Updates
+	 * on tables with OIDs, and get rid of this?
 	 */
 	if (command_type == CMD_UPDATE)
 	{
@@ -411,32 +425,8 @@ expand_targetlist(PlannerInfo *root, List *tlist, int command_type,
 			 * Yes, this is a split update.
 			 * Updating a hash column is a split update, of course.
 			 *
-			 * For each column that was changed, add the original column value
-			 * to the target list, if it's not there already.
+			 * Add the old OID to the tlist, if the table has OIDs.
 			 */
-			int			i;
-
-			for (i = 0; i < targetPolicy->nattrs; i++)
-			{
-				AttrNumber	keycolidx = targetPolicy->attrs[i];
-				Var		   *origvar;
-				Form_pg_attribute att_tup = rel->rd_att->attrs[keycolidx - 1];
-
-				origvar = makeVar(result_relation,
-								  keycolidx,
-								  att_tup->atttypid,
-								  att_tup->atttypmod,
-								  att_tup->attcollation,
-								  0);
-				TargetEntry *new_tle = makeTargetEntry((Expr *) origvar,
-													   attrno,
-													   NameStr(att_tup->attname),
-													   true);
-				new_tlist = lappend(new_tlist, new_tle);
-				attrno++;
-			}
-
-			/* Also add the old OID to the tlist, if the table has OIDs. */
 			if (rel->rd_rel->relhasoids)
 			{
 				TargetEntry *new_tle;

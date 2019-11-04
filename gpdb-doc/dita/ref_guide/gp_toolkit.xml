@@ -1567,9 +1567,7 @@
       <title id="ie193152x" class="- topic/title ">gp_resgroup_config</title>
       <body class="- topic/body ">
         <p>The <codeph>gp_resgroup_config</codeph> view allows administrators to see the current
-          CPU, memory, and concurrency limits for a resource group. The view also displays proposed
-          limit settings. A proposed limit will differ from the current limit when the limit has
-          been altered, but the new value could not be immediately applied.</p>
+          CPU, memory, and concurrency limits for a resource group.</p>
         <p>This view is accessible to all users.</p>
         <table id="ie177971x" class="- topic/table ">
           <title class="- topic/title ">gp_resgroup_config</title>
@@ -1597,11 +1595,6 @@
                     (<codeph>CONCURRENCY</codeph>) value specified for the resource group.</entry>
               </row>
               <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">proposed_concurrency</entry>
-                <entry colname="col2" class="- topic/entry ">The pending concurrency value for the
-                  resource group.</entry>
-              </row>
-              <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">cpu_rate_limit</entry>
                 <entry colname="col2" class="- topic/entry ">The CPU limit
                     (<codeph>CPU_RATE_LIMIT</codeph>) value specified for the resource group, or
@@ -1613,31 +1606,16 @@
                     (<codeph>MEMORY_LIMIT</codeph>) value specified for the resource group.</entry>
               </row>
               <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">proposed_memory_limit</entry>
-                <entry colname="col2" class="- topic/entry ">The pending memory limit value for the
-                  resource group.</entry>
-              </row>
-              <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">memory_shared_quota</entry>
                 <entry colname="col2" class="- topic/entry ">The shared memory quota
                     (<codeph>MEMORY_SHARED_QUOTA</codeph>) value specified for the resource
                   group.</entry>
               </row>
               <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">proposed_memory_shared_quota</entry>
-                <entry colname="col2" class="- topic/entry ">The pending shared memory quota value
-                  for the resource group.</entry>
-              </row>
-              <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">memory_spill_ratio</entry>
                 <entry colname="col2" class="- topic/entry ">The memory spill ratio
                     (<codeph>MEMORY_SPILL_RATIO</codeph>) value specified for the resource
                   group.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">proposed_memory_spill_ratio</entry>
-                <entry colname="col2" class="- topic/entry ">The pending memory spill ratio value
-                  for the resource group.</entry>
               </row>
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">memory_auditor</entry>
@@ -1744,13 +1722,13 @@
         <p id="json_field_info2">The <codeph>memory_usage</codeph> field is also a JSON-formatted,
           key:value string. The string contents differ depending upon the type of resource group.
           For each resource group that you assign to a role (default memory auditor
-            <codeph>vmtracker</codeph>), this string identifies the used, available, granted, and
-          proposed fixed and shared memory quota allocations on each segment. The key is segment id.
+            <codeph>vmtracker</codeph>), this string identifies the used and available
+          fixed and shared memory quota allocations on each segment. The key is segment id.
           The values are memory values displayed in MB units. The following example shows
             <codeph>memory_usage</codeph> column output for a single segment for a resource group
           that you assign to a
           role:<codeblock>
-"0":{"used":0, "available":76, "quota_used":-1, "quota_available":60, "quota_granted":60, "quota_proposed":60, "shared_used":0, "shared_available":16, "shared_granted":16, "shared_proposed":16}</codeblock>
+"0":{"used":0, "available":76, "quota_used":-1, "quota_available":60, "shared_used":0, "shared_available":16}</codeblock>
           For each resource group that you assign to an external component, the
             <codeph>memory_usage</codeph> JSON-formatted string identifies the memory used and the
           memory limit on each segment. The following example shows <codeph>memory_usage</codeph>
@@ -1822,11 +1800,6 @@
                   on the host.</entry>
               </row>
               <row>
-                <entry colname="col1"> <codeph>memory_quota_proposed</codeph> </entry>
-                <entry colname="col2">The total amount of fixed memory that Greenplum
-                  Database has allotted to the resource group on the host.</entry>
-              </row>
-              <row>
                 <entry colname="col1"> <codeph>memory_shared_used</codeph> </entry>
                 <entry colname="col2">The group shared memory used by the resource
                   group on the host. If any global shared memory is used by the resource
@@ -1838,31 +1811,14 @@
                   resource group on the host. Resource group global shared memory is not
                   included in this total.</entry>
               </row>
-              <row>
-                <entry colname="col1"> <codeph>memory_shared_granted</codeph> </entry>
-                <entry colname="col2">The portion of group shared memory that Greenplum
-                  Database has allotted to the resource group on the host. Resource group
-                  global shared memory is not included in this value.</entry>
-              </row>
-              <row>
-                <entry colname="col1"> <codeph>memory_shared_proposed</codeph> </entry>
-                <entry colname="col2">The total amount of group shared memory requested
-                  by the resource group on the host.</entry>
-              </row>
             </tbody>
           </tgroup>
         </table>
-        <p>The <codeph>memory_shared_granted</codeph> value may be less than
-          <codeph>memory_shared_proposed</codeph> if the cluster does not have enough
-          memory to allot. It may be greater than <codeph>memory_shared_proposed</codeph>
-          when global shared memory is in use by the resource group.
-          <codeph>memory_shared_granted</codeph> and <codeph>memory_shared_proposed</codeph>
-          should reach the same value over time.</p>
         <p>Sample output for the <codeph>gp_resgroup_status_per_host</codeph> view:</p>
-        <codeblock> rsgname       | groupid | hostname   | cpu  | memory_used | memory_available | memory_quota_used | memory_quota_available | memory_quota_proposed | memory_shared_used | memory_shared_available | memory_shared_granted | memory_shared_proposed 
----------------+---------+------------+------+-------------+------------------+-------------------+------------------------+-----------------------+--------------------+-------------------------+-----------------------+------------------------
- admin_group   | 6438    | my-desktop | 0.84 | 1           | 271              | 68                | 68                     | 136                   | 0                  | 136                     | 136                   | 136                    
- default_group | 6437    | my-desktop | 0.00 | 0           | 816              | 0                 | 400                    | 400                   | 0                  | 416                     | 416                   | 416                    
+        <codeblock> rsgname       | groupid | hostname   | cpu  | memory_used | memory_available | memory_quota_used | memory_quota_available | memory_shared_used | memory_shared_available 
+---------------+---------+------------+------+-------------+------------------+-------------------+------------------------+---------------------+---------------------
+ admin_group   | 6438    | my-desktop | 0.84 | 1           | 271              | 68                | 68                     | 0                  | 136                     
+ default_group | 6437    | my-desktop | 0.00 | 0           | 816              | 0                 | 400                    | 0                  | 416                     
 (2 rows)</codeblock>
       </body>
     </topic>
@@ -1934,13 +1890,6 @@
                   the segment instance on the host.</entry>
               </row>
               <row>
-                <entry colname="col1"> <codeph>memory_quota_proposed</codeph> </entry>
-                <entry colname="col4">The total amount of fixed memory that Greenplum Database
-                  has allotted to the resource group for the segment on the host. This value
-                  will be the same for all resource group and segment instance combinations
-                  on a host.</entry>
-              </row>
-              <row>
                 <entry colname="col1"> <codeph>memory_shared_used</codeph> </entry>
                 <entry colname="col4">The group shared memory used by the resource
                   group for the segment instance on the host.</entry>
@@ -1951,23 +1900,10 @@
                   for the segment instance on the host. Resource group global shared memory
                   is not included in this total.</entry>
               </row>
-              <row>
-                <entry colname="col1"> <codeph>memory_shared_granted</codeph> </entry>
-                <entry colname="col4">The portion of group shared memory that
-                  Greenplum Database has allotted to the resource group for the segment
-                  instance on the host. Resource group global shared memory is not
-                  included in this value.</entry>
-              </row>
-              <row>
-                <entry colname="col1"> <codeph>memory_shared_proposed</codeph> </entry>
-                <entry colname="col4">The total amount of group shared memory requested
-                  by the resource group on the host. This value will be the same for all
-                  resource group and segment instance combinations on a host.</entry>
-              </row>
             </tbody>
           </tgroup>
         </table>
-        <p>Query output for this view is similar to that of the 
+        <p>Query output for this view is similar to that of the
           <codeph>gp_resgroup_status_per_host</codeph> view, and breaks out the CPU and
           memory (used and available) for each segment instance on each host.</p>
       </body>
@@ -2324,7 +2260,7 @@
         <p>This view contains one row for each operator using disk space for workfiles on a segment
           at the current time. The view is accessible to all users, however non-superusers only to
           see information for the databases that they have permission to access.</p>
-        <table id="ie202617" class="- topic/table ">
+        <table class="- topic/table " id="table_zt5_yl1_gjb">
           <title class="- topic/title ">gp_workfile_entries</title>
           <tgroup cols="4" class="- topic/tgroup ">
             <colspec colnum="1" colname="col1" colwidth="131pt" class="- topic/colspec "/>
@@ -2342,32 +2278,6 @@
             <tbody class="- topic/tbody ">
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">command_cnt</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">integer</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">Command ID of the query.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">content</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">smallint</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The content identifier for a segment
-                  instance.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">current_query</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">text</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">Current query that the process is
-                  running.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
                   <codeph class="+ topic/ph pr-d/codeph ">datname</codeph>
                 </entry>
                 <entry colname="col2" class="- topic/entry ">name</entry>
@@ -2376,24 +2286,7 @@
               </row>
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">directory</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">text</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">Path to the work file.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">optype</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">text</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The query operator type that created
-                  the work file.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">procpid </codeph>
+                  <codeph class="+ topic/ph pr-d/codeph ">pid </codeph>
                 </entry>
                 <entry colname="col2" class="- topic/entry ">integer</entry>
                 <entry colname="col3" class="- topic/entry "/>
@@ -2410,38 +2303,11 @@
               </row>
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">size </codeph>
+                  <codeph class="+ topic/ph pr-d/codeph ">command_cnt</codeph>
                 </entry>
-                <entry colname="col2" class="- topic/entry ">bigint</entry>
+                <entry colname="col2" class="- topic/entry ">integer</entry>
                 <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The size of the work file in
-                  bytes.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">numfiles</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">bigint</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The number of files created.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">slice</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">smallint</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The query plan slice. The portion of
-                  the query plan that is being executed.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">state</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">text</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The state of the query that created the
-                  work file.</entry>
+                <entry colname="col4" class="- topic/entry ">Command ID of the query.</entry>
               </row>
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
@@ -2453,12 +2319,62 @@
               </row>
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">workmem</codeph>
+                  <codeph class="+ topic/ph pr-d/codeph ">query</codeph>
+                </entry>
+                <entry colname="col2" class="- topic/entry ">text</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">Current query that the process is
+                  running.</entry>
+              </row>
+              <row>
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph>segid</codeph></entry>
+                <entry colname="col2" class="- topic/entry ">integer</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">Segment ID.</entry>
+              </row>
+              <row class="- topic/row ">
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph class="+ topic/ph pr-d/codeph ">slice</codeph>
                 </entry>
                 <entry colname="col2" class="- topic/entry ">integer</entry>
                 <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The amount of memory allocated to the
-                  operator in KB.</entry>
+                <entry colname="col4" class="- topic/entry ">The query plan slice. The portion of
+                  the query plan that is being executed.</entry>
+              </row>
+              <row class="- topic/row ">
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph class="+ topic/ph pr-d/codeph ">optype</codeph>
+                </entry>
+                <entry colname="col2" class="- topic/entry ">text</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">The query operator type that created
+                  the work file.</entry>
+              </row>
+              <row class="- topic/row ">
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph class="+ topic/ph pr-d/codeph ">size</codeph>
+                </entry>
+                <entry colname="col2" class="- topic/entry ">bigint</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">The size of the work file in
+                  bytes.</entry>
+              </row>
+              <row class="- topic/row ">
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph class="+ topic/ph pr-d/codeph ">numfiles</codeph>
+                </entry>
+                <entry colname="col2" class="- topic/entry ">integer</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">The number of files created.</entry>
+              </row>
+              <row>
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph>prefix</codeph></entry>
+                <entry colname="col2" class="- topic/entry ">text</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">Prefix used when naming a related set
+                  of workfiles.</entry>
               </row>
             </tbody>
           </tgroup>
@@ -2491,32 +2407,6 @@
             <tbody class="- topic/tbody ">
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">command_cnt</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">integer</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">Command ID of the query.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">content</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">smallint</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The content identifier for a segment
-                  instance.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">current_query</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">text</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">Current query that the process is
-                  running.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
                   <codeph class="+ topic/ph pr-d/codeph ">datname</codeph>
                 </entry>
                 <entry colname="col2" class="- topic/entry ">name</entry>
@@ -2525,7 +2415,7 @@
               </row>
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">procpid </codeph>
+                  <codeph class="+ topic/ph pr-d/codeph ">pid </codeph>
                 </entry>
                 <entry colname="col2" class="- topic/entry ">integer</entry>
                 <entry colname="col3" class="- topic/entry "/>
@@ -2542,9 +2432,41 @@
               </row>
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
+                  <codeph class="+ topic/ph pr-d/codeph ">command_cnt</codeph>
+                </entry>
+                <entry colname="col2" class="- topic/entry ">integer</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">Command ID of the query.</entry>
+              </row>
+              <row class="- topic/row ">
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph class="+ topic/ph pr-d/codeph ">usename</codeph>
+                </entry>
+                <entry colname="col2" class="- topic/entry ">name</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">Role name.</entry>
+              </row>
+              <row class="- topic/row ">
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph class="+ topic/ph pr-d/codeph ">query</codeph>
+                </entry>
+                <entry colname="col2" class="- topic/entry ">text</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">Current query that the process is
+                  running.</entry>
+              </row>
+              <row>
+                <entry colname="col1" class="- topic/entry ">
+                  <codeph>segid</codeph></entry>
+                <entry colname="col2" class="- topic/entry ">integer</entry>
+                <entry colname="col3" class="- topic/entry "/>
+                <entry colname="col4" class="- topic/entry ">Segment ID.</entry>
+              </row>
+              <row class="- topic/row ">
+                <entry colname="col1" class="- topic/entry ">
                   <codeph class="+ topic/ph pr-d/codeph ">size</codeph>
                 </entry>
-                <entry colname="col2" class="- topic/entry ">bigint</entry>
+                <entry colname="col2" class="- topic/entry ">numeric</entry>
                 <entry colname="col3" class="- topic/entry "/>
                 <entry colname="col4" class="- topic/entry ">The size of the work file in
                   bytes.</entry>
@@ -2556,23 +2478,6 @@
                 <entry colname="col2" class="- topic/entry ">bigint</entry>
                 <entry colname="col3" class="- topic/entry "/>
                 <entry colname="col4" class="- topic/entry ">The number of files created.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">state</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">text</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The state of the query that created the
-                  work file.</entry>
-              </row>
-              <row class="- topic/row ">
-                <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">usename</codeph>
-                </entry>
-                <entry colname="col2" class="- topic/entry ">name</entry>
-                <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">Role name.</entry>
               </row>
             </tbody>
           </tgroup>
@@ -2606,18 +2511,17 @@
             <tbody class="- topic/tbody ">
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
-                  <codeph class="+ topic/ph pr-d/codeph ">content</codeph>
+                  <codeph class="+ topic/ph pr-d/codeph ">segid</codeph>
                 </entry>
                 <entry colname="col2" class="- topic/entry ">smallint</entry>
                 <entry colname="col3" class="- topic/entry "/>
-                <entry colname="col4" class="- topic/entry ">The content identifier for a segment
-                  instance.</entry>
+                <entry colname="col4" class="- topic/entry ">Segment ID.</entry>
               </row>
               <row class="- topic/row ">
                 <entry colname="col1" class="- topic/entry ">
                   <codeph class="+ topic/ph pr-d/codeph ">size</codeph>
                 </entry>
-                <entry colname="col2" class="- topic/entry ">bigint</entry>
+                <entry colname="col2" class="- topic/entry ">numeric</entry>
                 <entry colname="col3" class="- topic/entry "/>
                 <entry colname="col4" class="- topic/entry ">The total size of the work files on a
                   segment.</entry>

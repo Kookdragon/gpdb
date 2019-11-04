@@ -4,7 +4,7 @@
  *	  support for communication destinations
  *
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -130,7 +130,7 @@ CreateDestReceiver(CommandDest dest)
 			return CreateSQLFunctionDestReceiver();
 
 		case DestTransientRel:
-			return CreateTransientRelDestReceiver(InvalidOid);
+			return CreateTransientRelDestReceiver(InvalidOid, InvalidOid, false, 't', false);
 	}
 
 	/* should never get here */
@@ -236,6 +236,10 @@ ReadyForQuery(CommandDest dest)
 				{
 					pq_beginmessage(&buf, 'k');
 					pq_sendint64(&buf, VmemTracker_GetMaxReservedVmemBytes());
+					pq_endmessage(&buf);
+
+					pq_beginmessage(&buf, 'x');
+					pq_sendbyte(&buf, TransactionDidWriteXLog());
 					pq_endmessage(&buf);
 				}
 

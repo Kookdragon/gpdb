@@ -80,6 +80,9 @@ cdbpathlocus_equal(CdbPathLocus a, CdbPathLocus b)
 			DistributionKey *adistkey = (DistributionKey *) lfirst(acell);
 			DistributionKey *bdistkey = (DistributionKey *) lfirst(bcell);
 
+			if (adistkey->dk_opfamily != bdistkey->dk_opfamily)
+				return false;
+
 			foreach(b_ec_cell, bdistkey->dk_eclasses)
 			{
 				EquivalenceClass *b_ec = (EquivalenceClass *) lfirst(b_ec_cell);
@@ -92,9 +95,6 @@ cdbpathlocus_equal(CdbPathLocus a, CdbPathLocus b)
 				EquivalenceClass *a_ec = (EquivalenceClass *) lfirst(a_ec_cell);
 
 				if (!list_member_ptr(bdistkey->dk_eclasses, a_ec))
-					return false;
-
-				if (adistkey->dk_opfamily != bdistkey->dk_opfamily)
 					return false;
 			}
 		}
@@ -299,6 +299,15 @@ cdbpathlocus_from_subquery(struct PlannerInfo *root,
 				 */
 				if (flow->locustype == CdbLocusType_SegmentGeneral)
 					CdbPathLocus_MakeSegmentGeneral(&locus, numsegments);
+				else if (flow->locustype == CdbLocusType_General)
+				{
+					/*
+					 * If a subquery's locus is general, we should keep it
+					 * general here. And general locus's numsegments should
+					 * be the cluster size.
+					 */
+					CdbPathLocus_MakeGeneral(&locus, getgpsegmentCount());
+				}
 				else
 					CdbPathLocus_MakeSingleQE(&locus, numsegments);
 			}

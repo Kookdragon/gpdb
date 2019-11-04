@@ -36,12 +36,6 @@ typedef struct Gang
 	int	size;
 
 	/*
-	 * Keep track of dispatcher use for writer gang. (reader gangs already track
-	 * this properly, since they get allocated from a list of available gangs.)
-	 */
-	bool dispatcherActive;
-
-	/*
 	 * Array of QEs/segDBs that make up this gang. Sorted by segment index.
 	 */
 	struct SegmentDatabaseDescriptor **db_descriptors;	
@@ -53,6 +47,7 @@ typedef struct Gang
 extern int qe_identifier;
 
 extern int host_segments;
+extern int ic_htab_size;
 
 extern MemoryContext GangContext;
 extern Gang *CurrentGangCreating;
@@ -86,7 +81,7 @@ extern void CheckForResetSession(void);
 extern struct SegmentDatabaseDescriptor *getSegmentDescriptorFromGang(const Gang *gp, int seg);
 
 Gang *buildGangDefinition(List *segments, SegmentType segmentType);
-bool build_gpqeid_param(char *buf, int bufsz, bool is_writer, int identifier, int hostSegs);
+bool build_gpqeid_param(char *buf, int bufsz, bool is_writer, int identifier, int hostSegs, int icHtabSize);
 
 char *makeOptions(void);
 extern bool segment_failure_due_to_recovery(const char *error_message);

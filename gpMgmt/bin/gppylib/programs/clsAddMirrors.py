@@ -22,13 +22,12 @@ from gppylib.operations.buildMirrorSegments import *
 from gppylib.programs import programIoUtils
 from gppylib.system import configurationInterface as configInterface
 from gppylib.system.environment import GpMasterEnvironment
-from gppylib.parseutils import line_reader, parse_gpaddmirrors_line, \
-    canonicalize_address
-from gppylib.utils import ParsedConfigFile, ParsedConfigFileRow, \
-    writeLinesToFile, readAllLinesFromFile, TableLogger, \
+from gppylib.parseutils import line_reader, check_values, canonicalize_address
+from gppylib.utils import writeLinesToFile, readAllLinesFromFile, TableLogger, \
     PathNormalizationException, normalizeAndValidateInputPath
 from gppylib.gphostcache import GpInterfaceToHostNameCache
 from gppylib.userinput import *
+from gppylib.mainUtils import ExceptionNoStackTraceNeeded
 
 logger = gplog.get_default_logger()
 
@@ -270,23 +269,30 @@ class GpAddMirrorsProgram:
         self.__options = options
         self.__pool = None
 
-    def __getMirrorsToBuildFromConfigFile(self, gpArray):
+    def _getParsedRow(self, filename, lineno, line):
+        parts = line.split('|')
+        if len(parts) != 4:
+            msg = "line %d of file %s: expected 4 parts, obtained %d" % (lineno, filename, len(parts))
+            raise ExceptionNoStackTraceNeeded(msg)
+        content, address, port, datadir = parts
+        check_values(lineno, address=address, port=port, datadir=datadir, content=content)
+        return {
+            'address': address,
+            'port': port,
+            'dataDirectory': datadir,
+            'contentId': content,
+            'lineno': lineno
+        }
 
-        # create fileData object from config file
-        #
+    def __getMirrorsToBuildFromConfigFile(self, gpArray):
         filename = self.__options.mirrorConfigFile
         rows = []
         with open(filename) as f:
             for lineno, line in line_reader(f):
-                fixed, flexible = parse_gpaddmirrors_line(filename, lineno, line)
-                rows.append(ParsedConfigFileRow(fixed, flexible, line))
-        fileData = ParsedConfigFile([], rows)
+                rows.append(self._getParsedRow(filename, lineno, line))
 
-        # validate fileData
-        #
-        allAddresses = [row.getFixedValuesMap()["address"] for row in fileData.getRows()]
-        allNoneArr = [None for a in allAddresses]
-        interfaceLookup = GpInterfaceToHostNameCache(self.__pool, allAddresses, allNoneArr)
+        allAddresses = [row["address"] for row in rows]
+        interfaceLookup = GpInterfaceToHostNameCache(self.__pool, allAddresses, [None]*len(allAddresses))
 
         #
         # build up the output now
@@ -298,17 +304,10 @@ class GpAddMirrorsProgram:
         # note: passed port offset in this call should not matter
         calc = GpMirrorBuildCalculator(gpArray, [], self.__options)
 
-        for row in fileData.getRows():
-            fixedValues = row.getFixedValuesMap()
-            flexibleValues = row.getFlexibleValuesMap()
-
-            contentId = int(fixedValues['contentId'])
-            address = fixedValues['address']
-            #
-            # read the rest and add the mirror
-            #
-            port = int(fixedValues['port'])
-            dataDir = normalizeAndValidateInputPath(fixedValues['dataDirectory'], "in config file", row.getLine())
+        for row in rows:
+            contentId = int(row['contentId'])
+            address = row['address']
+            dataDir = normalizeAndValidateInputPath(row['dataDirectory'], "in config file", row['lineno'])
             hostName = interfaceLookup.getHostName(address)
             if hostName is None:
                 raise Exception("Segment Host Address %s is unreachable" % address)
@@ -316,9 +315,8 @@ class GpAddMirrorsProgram:
             primary = segsByContentId[contentId]
             if primary is None:
                 raise Exception("Invalid content %d specified in input file" % contentId)
-            primary = primary[0]
 
-            calc.addMirror(toBuild, primary, hostName, address, port, dataDir)
+            calc.addMirror(toBuild, primary[0], hostName, address, int(row['port']), dataDir)
 
         if len(toBuild) != len(primaries):
             raise Exception("Wrong number of mirrors specified (specified %s mirror(s) for %s primarie(s))" % \
@@ -336,11 +334,9 @@ class GpAddMirrorsProgram:
         #
         for i, toBuild in enumerate(mirrorBuilder.getMirrorsToBuild()):
             mirror = toBuild.getFailoverSegment()
-            primary = toBuild.getLiveSegment()
 
-            line = 'mirror%d=%d:%s:%d:%s' % \
-                   (i, \
-                    mirror.getSegmentContentId(), \
+            line = '%d|%s|%d|%s' % \
+                   (mirror.getSegmentContentId(), \
                     canonicalize_address(mirror.getSegmentAddress()), \
                     mirror.getSegmentPort(), \
                     mirror.getSegmentDataDirectory())
@@ -505,11 +501,23 @@ class GpAddMirrorsProgram:
 
     def config_primaries_for_replication(self, gpArray):
         logger.info("Starting to modify pg_hba.conf on primary segments to allow replication connections")
-        replicationStr = ". {0}/greenplum_path.sh; echo 'host  replication {1} samenet trust' >> {2}/pg_hba.conf; pg_ctl -D {2} reload"
+        replicationStr = ". {0}/greenplum_path.sh; echo 'host  replication {1} samenet trust {2}' >> {3}/pg_hba.conf; pg_ctl -D {3} reload"
 
         try:
             for segmentPair in gpArray.getSegmentList():
-                cmdStr = replicationStr.format(os.environ["GPHOME"], unix.getUserName(), segmentPair.primaryDB.datadir)
+                allow_pair_hba_line_entries = []
+                if self.__options.hba_hostnames:
+                    mirror_hostname, _, _ = socket.gethostbyaddr(segmentPair.mirrorDB.getSegmentHostName())
+                    hba_line_entry = "\nhost all {0} {1} trust".format(unix.getUserName(), mirror_hostname)
+                    allow_pair_hba_line_entries.append(hba_line_entry)
+                else:
+                    mirror_ips = unix.InterfaceAddrs.remote('get mirror ips', segmentPair.mirrorDB.getSegmentHostName())
+                    for ip in mirror_ips:
+                        cidr_suffix = '/128' if ':' in ip else '/32'
+                        cidr = ip + cidr_suffix
+                        hba_line_entry = "\nhost all {0} {1} trust".format(unix.getUserName(), cidr)
+                        allow_pair_hba_line_entries.append(hba_line_entry)
+                cmdStr = replicationStr.format(os.environ["GPHOME"], unix.getUserName(), " ".join(allow_pair_hba_line_entries), segmentPair.primaryDB.datadir)
                 logger.debug(cmdStr)
                 cmd = Command(name="append to pg_hba.conf", cmdStr=cmdStr, ctxt=base.REMOTE, remoteHost=segmentPair.primaryDB.hostname)
                 cmd.run(validateAfter=True)
@@ -625,6 +633,9 @@ class GpAddMirrorsProgram:
                          dest="parallelDegree",
                          metavar="<parallelDegree>",
                          help="Max # of workers to use for building recovery segments.  [default: %default]")
+
+        addTo.add_option('', '--hba-hostnames', action='store_true', dest='hba_hostnames',
+                          help='use hostnames instead of CIDR in pg_hba.conf')
 
         parser.set_defaults()
         return parser

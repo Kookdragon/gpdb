@@ -1,3 +1,7 @@
+-- start_matchsubs
+-- m/^DETAIL:.*gid=.*/
+-- s/gid=\d+-\d+/gid DUMMY/
+-- end_matchsubs
 -- Check if retry logic handles errors correctly.  The retry logic had
 -- a bug where error state wasn't cleaned up correctly during retries,
 -- leading to PANIC due to ERRORDATA_STACK_SIZE exeeded.
@@ -12,7 +16,6 @@ set dtx_phase2_retry_count = 11;
 --
 -- COMMIT_PREPARED
 --
-create extension if not exists gp_inject_fault;
 select gp_inject_fault('finish_prepared_start_of_function', 'error', '', '', '', 1, 10, 0, dbid)
 from gp_segment_configuration where role = 'p' and status = 'u' and content = 1;
 begin;

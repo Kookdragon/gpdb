@@ -18,6 +18,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "miscadmin.h" /* work_mem */
 #include "executor/executor.h"
 #include "nodes/execnodes.h"
@@ -31,14 +33,13 @@
 #include "utils/elog.h"
 #include "cdb/memquota.h"
 #include "utils/workfile_mgr.h"
-#include "utils/resource_manager.h"
 
 #include "access/hash.h"
 
 #include "cdb/cdbexplain.h"
 #include "cdb/cdbvars.h"
 
-
+#define BUFFER_INCREMENT_SIZE 1024
 #define HHA_MSG_LVL DEBUG2
 
 
@@ -89,24 +90,8 @@ typedef enum InputRecordType
 		Assert((hashtable)->mem_for_metadata > 0); \
 		Assert((hashtable)->mem_for_metadata > (hashtable)->nbuckets * OVERHEAD_PER_BUCKET); \
 		if ((hashtable)->mem_for_metadata >= (hashtable)->max_mem) \
-		{ \
-			if (IsResGroupEnabled()) \
-			{ \
-				elog(HHA_MSG_LVL, \
-					 "HashAgg: no enough operator memory for spilling: " \
-					 "operator memory is %.0f bytes, " \
-					 "current meta data is %.0f bytes; " \
-					 "the overuse is allowed in resource group mode", \
-					 (hashtable)->max_mem, \
-					 (hashtable)->mem_for_metadata); \
-			} \
-			else \
-			{ \
-				ereport(ERROR, \
-						(errcode(ERRCODE_INTERNAL_ERROR), \
-						 errmsg(ERRMSG_GP_INSUFFICIENT_STATEMENT_MEMORY))); \
-			} \
-		} \
+			ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), \
+				errmsg(ERRMSG_GP_INSUFFICIENT_STATEMENT_MEMORY)));\
 	} while (0)
 
 #define GET_TOTAL_USED_SIZE(hashtable) \
@@ -207,14 +192,20 @@ calc_hash_value(AggState* aggstate, TupleTableSlot *inputslot)
  */
 static inline void
 adjustInputGroup(AggState *aggstate, 
-				 void *input_group)
+				 void *input_group,
+				 bool temporary)
 {
 	int32 tuple_size;
 	void *datum;
 	AggStatePerGroup pergroup;
 	AggStatePerAgg peragg = aggstate->peragg;
 	int aggno;
-	
+	Size datum_size;
+	int16 byteaTranstypeLen = 0;
+	bool byteaTranstypeByVal = 0;
+	/* INTERNAL aggtype is always set to BYTEA in cdbgrouping and upstream partial-aggregation */
+	get_typlenbyval(BYTEAOID, &byteaTranstypeLen, &byteaTranstypeByVal);
+
 	tuple_size = memtuple_get_size((MemTuple)input_group);
 	pergroup = (AggStatePerGroup) ((char *)input_group +
 								   MAXALIGN(tuple_size));
@@ -226,11 +217,48 @@ adjustInputGroup(AggState *aggstate,
 	{
 		AggStatePerAgg peraggstate = &peragg[aggno];
 		AggStatePerGroup pergroupstate = &pergroup[aggno];
-		
-		if (!peraggstate->transtypeByVal &&
-			!pergroupstate->transValueIsNull)
+
+		/* Skip null transValue */
+		if (pergroupstate->transValueIsNull)
+			continue;
+
+		/* Deserialize the aggregate states loaded from the spill file */
+		if (OidIsValid(peraggstate->deserialfn_oid))
 		{
-			Size datum_size;
+			FunctionCallInfoData _dsinfo;
+			FunctionCallInfo dsinfo = &_dsinfo;
+			MemoryContext oldContext;
+
+			InitFunctionCallInfoData(_dsinfo,
+									 &peraggstate->deserialfn,
+									 2,
+									 InvalidOid,
+									 (void *) aggstate, NULL);
+
+			dsinfo->arg[0] = PointerGetDatum(datum);
+			dsinfo->argnull[0] = pergroupstate->transValueIsNull;
+			/* Dummy second argument for type-safety reasons */
+			dsinfo->arg[1] = PointerGetDatum(NULL);
+			dsinfo->argnull[1] = false;
+
+			/*
+			 * We run the deserialization functions in per-input-tuple
+			 * memory context if it's safe to be dropped after.
+			 */
+			if (temporary)
+				oldContext = MemoryContextSwitchTo(aggstate->tmpcontext->ecxt_per_tuple_memory);
+
+			pergroupstate->transValue = FunctionCallInvoke(dsinfo);
+
+			if (temporary)
+				MemoryContextSwitchTo(oldContext);
+
+			datum_size = datumGetSize(PointerGetDatum(datum), byteaTranstypeByVal, byteaTranstypeLen);
+			Assert(MAXALIGN(datum_size) - datum_size <= MAXIMUM_ALIGNOF);
+			datum = (char *)datum + MAXALIGN(datum_size);
+		}
+		else if (!peraggstate->transtypeByVal)
+		{
 			pergroupstate->transValue = PointerGetDatum(datum);
 			datum_size = datumGetSize(pergroupstate->transValue,
 									  peraggstate->transtypeByVal,
@@ -288,7 +316,7 @@ makeHashAggEntryForInput(AggState *aggstate, TupleTableSlot *inputslot, uint32 h
 
 	tup_len = 0;
 	aggs_len = aggstate->numaggs * sizeof(AggStatePerGroupData);
-	
+
 	oldcxt = MemoryContextSwitchTo(hashtable->entry_cxt);
 
 	entry = getEmptyHashAggEntry(aggstate);
@@ -298,10 +326,12 @@ makeHashAggEntryForInput(AggState *aggstate, TupleTableSlot *inputslot, uint32 h
 	entry->next = NULL;
 
 	/*
-	 * Copy memtuple into group_buf. Remember to always allocate
-	 * enough space before calling ExecCopySlotMemTupleTo() because
-	 * this function will call palloc() to allocate bigger space if
-	 * the given one is not big enough, which is what we want to avoid.
+	 * Calculate the tup_len we need.
+	 *
+	 * Since *tup_len is 0 and inline_toast is false, the only thing
+	 * memtuple_form_to() does here is calculating the tup_len.
+	 *
+	 * The memtuple_form_to() next time does the actual memtuple copy.
 	 */
 	entry->tuple_and_aggs = (void *)memtuple_form_to(hashslot->tts_mt_bind,
 													 values,
@@ -313,24 +343,13 @@ makeHashAggEntryForInput(AggState *aggstate, TupleTableSlot *inputslot, uint32 h
 	if (GET_TOTAL_USED_SIZE(hashtable) + MAXALIGN(MAXALIGN(tup_len) + aggs_len) >=
 		hashtable->max_mem)
 	{
-		if (IsResGroupEnabled())
-		{
-			elog(HHA_MSG_LVL,
-				 "HashAgg: no enough operator memory to store new tuple: "
-				 "operator memory is %.0f bytes, "
-				 "current used size is %.0f bytes, "
-				 "need %lu bytes to store the new tuple; "
-				 "the overuse is allowed in resource group mode",
-				 hashtable->max_mem,
-				 GET_TOTAL_USED_SIZE(hashtable),
-				 MAXALIGN(MAXALIGN(tup_len) + aggs_len));
-		}
-		else
-		{
-			return NULL;
-		}
+		MemoryContextSwitchTo(oldcxt);
+		return NULL;
 	}
 
+	/*
+	 * Form memtuple into group_buf.
+	 */
 	entry->tuple_and_aggs = mpool_alloc(hashtable->group_buf,
 										MAXALIGN(MAXALIGN(tup_len) + aggs_len));
 	len = tup_len;
@@ -372,30 +391,17 @@ makeHashAggEntryForGroup(AggState *aggstate, void *tuple_and_aggs,
 	MemoryContext oldcxt;
 
 	if (GET_TOTAL_USED_SIZE(hashtable) + input_size >= hashtable->max_mem)
-	{
-		if (IsResGroupEnabled())
-		{
-			elog(HHA_MSG_LVL,
-				 "HashAgg: no enough operator memory to store new group keys and aggregate values: "
-				 "operator memory is %.0f bytes, "
-				 "current used size is %.0f bytes, "
-				 "need %d bytes to store the new data; "
-				 "the overuse is allowed in resource group mode",
-				 hashtable->max_mem,
-				 GET_TOTAL_USED_SIZE(hashtable),
-				 input_size);
-		}
-		else
-		{
-			return NULL;
-		}
-	}
+		return NULL;
 
 	copy_tuple_and_aggs = mpool_alloc(hashtable->group_buf, input_size);
 	memcpy(copy_tuple_and_aggs, tuple_and_aggs, input_size);
 
-	oldcxt = MemoryContextSwitchTo(hashtable->entry_cxt);
-	
+	/*
+	 * The deserialized transValues are not in mpool, put them
+	 * in a separate context and reset with mpool_reset
+	 */
+	oldcxt = MemoryContextSwitchTo(hashtable->serialization_cxt);
+
 	entry = getEmptyHashAggEntry(aggstate);
 	entry->hashvalue = hashvalue;
 	entry->is_primodial = !(hashtable->is_spilling);
@@ -403,7 +409,7 @@ makeHashAggEntryForGroup(AggState *aggstate, void *tuple_and_aggs,
 	entry->next = NULL;
 
 	/* Initialize per group data */
-	adjustInputGroup(aggstate, entry->tuple_and_aggs);
+	adjustInputGroup(aggstate, entry->tuple_and_aggs, false);
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -513,7 +519,7 @@ lookup_agg_hash_entry(AggState *aggstate,
 			entry_datum = memtuple_getattr(mtup, mt_bind, att, &entry_isNull);
 
 			if ( !input_isNull && !entry_isNull &&
-				 (DatumGetBool(FunctionCall2(&aggstate->eqfunctions[i],
+				 (DatumGetBool(FunctionCall2(&aggstate->phase->eqfunctions[i],
 											 input_datum,
 											 entry_datum)) ) )
 				continue; /* Both non-NULL and equal. */
@@ -601,7 +607,6 @@ calcHashAggTableSizes(double memquota,	/* Memory quota in bytes. */
 					  HashAggTableSizes   *out_hats)
 {
 	double entrysize, nbuckets, nentries;
-	double orig_memquota = memquota;
 
 	/* Assume we don't need to spill */
 	bool expectSpill = false;
@@ -615,9 +620,6 @@ calcHashAggTableSizes(double memquota,	/* Memory quota in bytes. */
 	elog(HHA_MSG_LVL, "HashAgg: ngroups = %g, memquota = %g, entrysize = %g",
 		 ngroups, memquota, entrysize);
 
-	if (out_hats)
-		out_hats->memquota = memquota;
-
 	/*
 	 * When all groups can not fit in the memory, we compute
 	 * the number of batches to store spilled groups. Currently, we always
@@ -628,15 +630,6 @@ calcHashAggTableSizes(double memquota,	/* Memory quota in bytes. */
 		nbatches = gp_hashagg_default_nbatches;
 		batchfile_mem = BATCHFILE_METADATA * (1 + nbatches);
 		expectSpill = true;
-
-		/* In resource group the memory quota could be dynamically enlarged */
-		if (IsResGroupEnabled() && memquota < batchfile_mem)
-		{
-			if (out_hats)
-				out_hats->memquota += batchfile_mem - memquota;
-
-			memquota = batchfile_mem;
-		}
 
 		/*
 		 * If the memory quota is smaller than the overhead for batch files,
@@ -662,15 +655,6 @@ calcHashAggTableSizes(double memquota,	/* Memory quota in bytes. */
 	/* but at least a few hash entries as required */
 	nentries = Max(nentries, gp_hashagg_groups_per_bucket);
 	entries_mem = nentries * entrywidth;
-
-	/* In resource group the memory quota could be dynamically enlarged */
-	if (IsResGroupEnabled() && memquota < entries_mem)
-	{
-		if (out_hats)
-			out_hats->memquota += 1 + entries_mem - memquota;
-
-		memquota = 1 + entries_mem;
-	}
 
 	/*
 	 * If the memory quota is smaller than the minimum number of entries
@@ -711,15 +695,6 @@ calcHashAggTableSizes(double memquota,	/* Memory quota in bytes. */
 	nbuckets = Max(nbuckets, gp_hashagg_default_nbatches);
 	buckets_mem = nbuckets * OVERHEAD_PER_BUCKET;
 
-	/* In resource group the memory quota could be dynamically enlarged */
-	if (IsResGroupEnabled() && memquota < buckets_mem)
-	{
-		if (out_hats)
-			out_hats->memquota += buckets_mem - memquota;
-
-		memquota = buckets_mem;
-	}
-
 	/* Reserve memory for the entries + hash table */
 	memquota -= buckets_mem;
 
@@ -755,13 +730,6 @@ calcHashAggTableSizes(double memquota,	/* Memory quota in bytes. */
 		out_hats->spill = expectSpill;
 		out_hats->workmem_initial = (unsigned)(batchfile_mem);
 		out_hats->workmem_per_entry = (unsigned) entrysize;
-
-		if (IsResGroupEnabled() && out_hats->memquota > orig_memquota)
-		{
-			elog(HHA_MSG_LVL,
-				 "HashAgg: auto enlarge operator memory from %.0f to %.0f in resource group mode",
-				 out_hats->memquota, orig_memquota);
-		}
 	}
 	
 	elog(HHA_MSG_LVL, "HashAgg: nbuckets = %d, nentries = %d, nbatches = %d",
@@ -840,12 +808,21 @@ create_agg_hash_table(AggState *aggstate)
 	HashAggTable *hashtable;
 	Agg *agg = (Agg *)aggstate->ss.ps.plan;
 	MemoryContext oldcxt;
+	MemoryContext curaggcontext;
 
-	oldcxt = MemoryContextSwitchTo(aggstate->aggcontext);
+	curaggcontext = aggstate->aggcontexts[aggstate->current_set]->ecxt_per_tuple_memory;
+
+	oldcxt = MemoryContextSwitchTo(curaggcontext);
 	hashtable = (HashAggTable *) palloc0(sizeof(HashAggTable));
 
-	hashtable->entry_cxt = AllocSetContextCreate(aggstate->aggcontext, 
+	hashtable->entry_cxt = AllocSetContextCreate(curaggcontext,
 												 "HashAggTableEntryContext",
+												 ALLOCSET_DEFAULT_MINSIZE,
+												 ALLOCSET_DEFAULT_INITSIZE,
+												 ALLOCSET_DEFAULT_MAXSIZE);
+
+	hashtable->serialization_cxt = AllocSetContextCreate(hashtable->entry_cxt,
+												 "HashAggTableEntrySerializationlContext",
 												 ALLOCSET_DEFAULT_MINSIZE,
 												 ALLOCSET_DEFAULT_INITSIZE,
 												 ALLOCSET_DEFAULT_MAXSIZE);
@@ -855,7 +832,7 @@ create_agg_hash_table(AggState *aggstate)
 	keywidth = est_hash_tuple_size(aggstate->ss.ss_ScanTupleSlot, aggstate->hash_needed);
 	keywidth = Min(keywidth, agg->plan.plan_width);
 
-	entrywidth = agg_hash_entrywidth(aggstate->numaggs, keywidth, agg->transSpace);
+	entrywidth = agg_hash_entrywidth(aggstate->numaggs, keywidth, 100 /* FIXME: was transspace */);
 
 	if (!calcHashAggTableSizes(1024.0 * (double) operatorMemKB,
 							agg->numGroups,
@@ -889,7 +866,7 @@ create_agg_hash_table(AggState *aggstate)
 
 	MemoryContextSwitchTo(oldcxt);
 
-	hashtable->max_mem = hashtable->hats.memquota;
+	hashtable->max_mem = 1024.0 * operatorMemKB;
 	hashtable->mem_for_metadata = sizeof(HashAggTable) +
 			hashtable->nbuckets * OVERHEAD_PER_BUCKET +
 			sizeof(GroupKeysAndAggs);
@@ -948,7 +925,7 @@ agg_hash_initial_pass(AggState *aggstate)
 	}
 	else
 	{
-		outerslot = ExecProcNode(outerPlanState(aggstate));
+		outerslot = fetch_input_tuple(aggstate);
 	}
 
 	/*
@@ -1031,12 +1008,12 @@ agg_hash_initial_pass(AggState *aggstate)
 			int tup_len = memtuple_get_size((MemTuple)entry->tuple_and_aggs);
 			MemSet((char *)entry->tuple_and_aggs + MAXALIGN(tup_len), 0,
 				   aggstate->numaggs * sizeof(AggStatePerGroupData));
-			initialize_aggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs);
+			initialize_aggregates(aggstate, aggstate->peragg, hashtable->groupaggs->aggs, 0);
 		}
 			
 		/* Advance the aggregates */
 		advance_aggregates(aggstate, hashtable->groupaggs->aggs);
-		
+
 		hashtable->num_tuples++;
 
 		/* Reset per-input-tuple context after each tuple */
@@ -1051,7 +1028,7 @@ agg_hash_initial_pass(AggState *aggstate)
 		}
 
 		/* Read the next tuple */
-		outerslot = ExecProcNode(outerPlanState(aggstate));
+		outerslot = fetch_input_tuple(aggstate);
 	}
 
 	if (GET_TOTAL_USED_SIZE(hashtable) > hashtable->mem_used)
@@ -1445,6 +1422,9 @@ spill_hash_table(AggState *aggstate)
 	/* Reset the buffer */
 	mpool_reset(hashtable->group_buf);
 
+	/* Reset serialization context */
+	MemoryContextReset(hashtable->serialization_cxt);
+
 	/* Reset in-memory entries count */
 	hashtable->num_entries = 0;
 
@@ -1568,63 +1548,117 @@ writeHashEntry(AggState *aggstate, BatchFileInfo *file_info,
 	AggStatePerGroup pergroup;
 	int aggno;
 	AggStatePerAgg peragg = aggstate->peragg;
+	Size datum_size;
+	Datum serializedVal;
+	int16 byteaTranstypeLen = 0;
+	bool byteaTranstypeByVal = 0;
+	/* INTERNAL aggtype is always set to BYTEA in cdbgrouping and upstream partial-aggregation */
+	get_typlenbyval(BYTEAOID, &byteaTranstypeLen, &byteaTranstypeByVal);
 
 	Assert(file_info != NULL);
 	Assert(file_info->wfile != NULL);
 
-	BufFileWriteOrError(file_info->wfile, (void *) &entry->hashvalue, sizeof(entry->hashvalue));
+	/*
+	 * Store all the data into a buffer then write it at one shot to the file. The
+	 * spill files could be compressed, and we can't go back and update the total size
+	 * once data is written, so better to get all the data and write it.
+	 * aggDataBuffer is a static pointer because we want to initialize it only once
+	 * in TopMemoryContext to avoid the overhead for allocation and freeing for every
+	 * call of this function.
+	 *
+	 * We initially start the buffer with the 1024, and keep incrementing it
+	 * with 1024 whenever the buffer + datum_size exceeds the current buffer size
+	 */
+	static char *aggDataBuffer = NULL;
+	static int aggDataBufferSize = BUFFER_INCREMENT_SIZE;
+	int32 aggDataOffset = 0;
+	if (aggDataBuffer == NULL)
+		aggDataBuffer = MemoryContextAlloc(TopMemoryContext, aggDataBufferSize);
 
 	tuple_agg_size = memtuple_get_size((MemTuple)entry->tuple_and_aggs);
 	pergroup = (AggStatePerGroup) ((char *)entry->tuple_and_aggs + MAXALIGN(tuple_agg_size));
 	tuple_agg_size = MAXALIGN(tuple_agg_size) +
-		aggstate->numaggs * sizeof(AggStatePerGroupData);
-	total_size = MAXALIGN(tuple_agg_size);
+					 aggstate->numaggs * sizeof(AggStatePerGroupData);
 
 	for (aggno = 0; aggno < aggstate->numaggs; aggno++)
 	{
 		AggStatePerAgg peraggstate = &peragg[aggno];
 		AggStatePerGroup pergroupstate = &pergroup[aggno];
-		
-		if (!peraggstate->transtypeByVal &&
-			!pergroupstate->transValueIsNull)
+		char *datum_value = NULL;
+
+		/* Skip null transValue */
+		if (pergroupstate->transValueIsNull)
+			continue;
+
+		/*
+		 * If it has a serialization function, serialize it without checking
+		 * transtypeByVal since it's INTERNALOID, a pointer but set to byVal.
+		 */
+		if (OidIsValid(peraggstate->serialfn_oid))
 		{
-			Size datum_size = datumGetSize(pergroupstate->transValue,
-										   peraggstate->transtypeByVal,
-										   peraggstate->transtypeLen);
-			total_size += MAXALIGN(datum_size);
+			FunctionCallInfoData fcinfo;
+			MemoryContext old_ctx;
+
+			InitFunctionCallInfoData(fcinfo,
+									 &peraggstate->serialfn,
+									 1,
+									 InvalidOid,
+									 (void *) aggstate, NULL);
+
+			fcinfo.arg[0] = pergroupstate->transValue;
+			fcinfo.argnull[0] = pergroupstate->transValueIsNull;
+
+			/* Not necessary to do this if the serialization func has no memory leak */
+			old_ctx = MemoryContextSwitchTo(aggstate->hhashtable->serialization_cxt);
+			serializedVal = FunctionCallInvoke(&fcinfo);
+			datum_size = datumGetSize(serializedVal, byteaTranstypeByVal, byteaTranstypeLen);
+			datum_value = DatumGetPointer(serializedVal);
+			MemoryContextSwitchTo(old_ctx);
 		}
+		/* If it's a ByRef, write the data to the file */
+		else if (!peraggstate->transtypeByVal)
+		{
+			datum_size = datumGetSize(pergroupstate->transValue,
+									  peraggstate->transtypeByVal,
+									  peraggstate->transtypeLen);
+			datum_value = DatumGetPointer(pergroupstate->transValue);
+		}
+		/* Otherwise it's a real ByVal, do nothing */
+		else
+		{
+			continue;
+		}
+
+		if ((aggDataOffset + MAXALIGN(datum_size)) >= aggDataBufferSize)
+		{
+			aggDataBufferSize += BUFFER_INCREMENT_SIZE;
+			MemoryContext oldAggContext = MemoryContextSwitchTo(TopMemoryContext);
+			aggDataBuffer = repalloc(aggDataBuffer, aggDataBufferSize);
+			MemoryContextSwitchTo(oldAggContext);
+		}
+		memcpy((aggDataBuffer + aggDataOffset), datum_value, datum_size);
+
+		aggDataOffset += MAXALIGN(datum_size);
+
+		/* if it had a valid serialization function, then free the value */
+		if  (OidIsValid(peraggstate->serialfn_oid))
+			pfree(datum_value);
 	}
 
+	total_size = MAXALIGN(tuple_agg_size) + aggDataOffset;
+	// write
+	BufFileWriteOrError(file_info->wfile, (void *) &entry->hashvalue, sizeof(entry->hashvalue));
 	BufFileWriteOrError(file_info->wfile, (char *) &total_size, sizeof(total_size));
 	BufFileWriteOrError(file_info->wfile, entry->tuple_and_aggs, tuple_agg_size);
 	Assert(MAXALIGN(tuple_agg_size) - tuple_agg_size <= MAXIMUM_ALIGNOF);
+
 	if (MAXALIGN(tuple_agg_size) - tuple_agg_size > 0)
 	{
 		BufFileWriteOrError(file_info->wfile, padding_dummy, MAXALIGN(tuple_agg_size) - tuple_agg_size);
 	}
-
-	for (aggno = 0; aggno < aggstate->numaggs; aggno++)
-	{
-		AggStatePerAgg peraggstate = &peragg[aggno];
-		AggStatePerGroup pergroupstate = &pergroup[aggno];
-		
-		if (!peraggstate->transtypeByVal &&
-			!pergroupstate->transValueIsNull)
-		{
-			Size datum_size = datumGetSize(pergroupstate->transValue,
-										   peraggstate->transtypeByVal,
-										   peraggstate->transtypeLen);
-			BufFileWriteOrError(file_info->wfile,
-								DatumGetPointer(pergroupstate->transValue), datum_size);
-			Assert(MAXALIGN(datum_size) - datum_size <= MAXIMUM_ALIGNOF);
-			if (MAXALIGN(datum_size) - datum_size > 0)
-			{
-				BufFileWriteOrError(file_info->wfile,
-									 padding_dummy, MAXALIGN(datum_size) - datum_size);
-			}
-		}
-	}
-
+	/* Write the transition aggstates */
+	if (aggDataOffset)
+		BufFileWriteOrError(file_info->wfile, aggDataBuffer, aggDataOffset);
 	return (total_size + sizeof(total_size) + sizeof(entry->hashvalue));
 }
 
@@ -1892,6 +1926,7 @@ agg_hash_reload(AggState *aggstate)
 										  hashkey, &isNew);
 		}
 
+		/* Combine it to the group state if it's not a new entry */
 		if (!isNew)
 		{
 			int aggno;
@@ -1900,7 +1935,12 @@ agg_hash_reload(AggState *aggstate)
 
 			setGroupAggs(hashtable, entry);
 
-			adjustInputGroup(aggstate, input);
+			/*
+			 * Adjust the input in the per tuple memory context, since the
+			 * value will be combined to the group state, we don't need the
+			 * keep the memory storing the transValue.
+			 */
+			adjustInputGroup(aggstate, input, true);
 			
 			/* Advance the aggregates for the group by applying combine function. */
 			for (aggno = 0; aggno < aggstate->numaggs; aggno++)
@@ -1913,6 +1953,7 @@ agg_hash_reload(AggState *aggstate)
 				fcinfo.arg[1] = input_pergroupstate[aggno].transValue;
 				fcinfo.argnull[1] = input_pergroupstate[aggno].transValueIsNull;
 
+				/* Combine to the transition aggstate */
 				pergroupstate->transValue =
 					invoke_agg_trans_func(aggstate,
 										  peraggstate,
@@ -2029,26 +2070,8 @@ reCalcNumberBatches(HashAggTable *hashtable, SpillFile *spill_file)
 	
 	if (hashtable->mem_for_metadata +
 		nbatches * BATCHFILE_METADATA > hashtable->max_mem)
-	{
-		if (IsResGroupEnabled())
-		{
-			elog(HHA_MSG_LVL,
-				 "HashAgg: no enough operator memory for spilling: "
-				 "operator memory is %.0f bytes, "
-				 "current meta data is %.0f bytes, "
-				 "need %lu bytes for %u more batches; "
-				 "the overuse is allowed in resource group mode",
-				 hashtable->max_mem,
-				 hashtable->mem_for_metadata,
-				 nbatches * BATCHFILE_METADATA,
-				 nbatches);
-		}
-		else
-		{
-			ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
-							ERRMSG_GP_INSUFFICIENT_STATEMENT_MEMORY));
-		}
-	}
+		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
+				 ERRMSG_GP_INSUFFICIENT_STATEMENT_MEMORY));
 	
 	hashtable->hats.nbatches = nbatches;
 }
@@ -2255,7 +2278,10 @@ void reset_agg_hash_table(AggState *aggstate, int64 nentries)
 	double old_nbuckets;
 	HashAggTableSizes hats;
 	MemoryContext oldcxt;
+	MemoryContext curaggcontext;
 	
+	curaggcontext = aggstate->aggcontexts[aggstate->current_set]->ecxt_per_tuple_memory;
+
 	elog(HHA_MSG_LVL,
 		"HashAgg: resetting " INT64_FORMAT "-entry hash table",
 		hashtable->num_ht_groups);
@@ -2278,7 +2304,7 @@ void reset_agg_hash_table(AggState *aggstate, int64 nentries)
 	{
 		Assert(hats.nbuckets > 0);
 		old_nbuckets = hashtable->nbuckets;
-		oldcxt = MemoryContextSwitchTo(aggstate->aggcontext);
+		oldcxt = MemoryContextSwitchTo(curaggcontext);
 
 		Assert(hashtable->mem_for_metadata > hashtable->nbuckets * OVERHEAD_PER_BUCKET);
 
@@ -2320,6 +2346,8 @@ void reset_agg_hash_table(AggState *aggstate, int64 nentries)
 	hashtable->pshift = 0;
 
 	mpool_reset(hashtable->group_buf);
+
+	MemoryContextReset(hashtable->serialization_cxt);
 
 	init_agg_hash_iter(hashtable);
 

@@ -234,6 +234,25 @@ CdbDispatchPlan(struct QueryDesc *queryDesc,
 }
 
 /*
+ * SET command can not be dispatched to named portal (like CURSOR). On the one
+ * hand, named portal might be busy and also it should not be affected by
+ * the SET command. Then when a dispatcher state of named portal is destroyed,
+ * its gang should not be recycled because its guc was not set, so need to mark
+ * those gangs as not recyclable.
+ */
+static void
+cdbdisp_markNamedPortalGangsDestroyed(void)
+{
+	dispatcher_handle_t *head = open_dispatcher_handles;
+	while (head != NULL)
+	{
+		if (head->dispatcherState->isExtendedQuery)
+			head->dispatcherState->forceDestroyGang = true;
+		head = head->next;
+	}
+}
+
+/*
  * Special for sending SET commands that change GUC variables, so they go to all
  * gangs, both reader and writer
  *
@@ -246,15 +265,11 @@ CdbDispatchSetCommand(const char *strCommand, bool cancelOnError)
 {
 	CdbDispatcherState *ds;
 	DispatchCommandQueryParms *pQueryParms;
+	Gang *primaryGang;
 	char	   *queryText;
 	int		queryTextLength;
 	ListCell   *le;
 	ErrorData *qeError = NULL;
-
-	dtmPreCommand("CdbDispatchSetCommand", strCommand, NULL,
-				  false /* no two-phase commit needed for SET */,
-				  false, /* no snapshot needed for SET */
-				  false /* inCursor */ );
 
 	elog((Debug_print_full_dtm ? LOG : DEBUG5),
 		 "CdbDispatchSetCommand for command = '%s'",
@@ -266,7 +281,7 @@ CdbDispatchSetCommand(const char *strCommand, bool cancelOnError)
 
 	queryText = buildGpQueryString(pQueryParms, &queryTextLength);
 
-	AllocateGang(ds, GANGTYPE_PRIMARY_WRITER, cdbcomponent_getCdbComponentsList());
+	primaryGang = AllocateGang(ds, GANGTYPE_PRIMARY_WRITER, cdbcomponent_getCdbComponentsList());
 
 	/* put all idle segment to a gang so QD can send SET command to them */
 	AllocateGang(ds, GANGTYPE_PRIMARY_READER, formIdleSegmentIdList());
@@ -280,6 +295,7 @@ CdbDispatchSetCommand(const char *strCommand, bool cancelOnError)
 
 		cdbdisp_dispatchToGang(ds, rg, -1);
 	}
+	addToGxactTwophaseSegments(primaryGang);
 
 	/*
 	 * No need for two-phase commit, so no need to call
@@ -292,8 +308,6 @@ CdbDispatchSetCommand(const char *strCommand, bool cancelOnError)
 
 	cdbdisp_getDispatchResults(ds, &qeError);
 
-	cdbdisp_destroyDispatcherState(ds);
-
 	/*
 	 * For named portal (like CURSOR), SET command will not be
 	 * dispatched. Meanwhile such gang should not be reused because
@@ -302,9 +316,9 @@ CdbDispatchSetCommand(const char *strCommand, bool cancelOnError)
 	cdbdisp_markNamedPortalGangsDestroyed();
 
 	if (qeError)
-	{
 		ReThrowError(qeError);
-	}
+
+	cdbdisp_destroyDispatcherState(ds);
 }
 
 /*
@@ -339,11 +353,9 @@ CdbDispatchCommandToSegments(const char *strCommand,
 {
 	DispatchCommandQueryParms *pQueryParms;
 	bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
-	bool withSnapshot = flags & DF_WITH_SNAPSHOT;
 
-	dtmPreCommand("CdbDispatchCommand", strCommand,
-				  NULL, needTwoPhase, withSnapshot,
-				  false /* inCursor */ );
+	if (needTwoPhase)
+		setupTwoPhaseTransaction();
 
 	elogif((Debug_print_full_dtm || log_min_messages <= DEBUG5), LOG,
 		   "CdbDispatchCommand: %s (needTwoPhase = %s)",
@@ -379,12 +391,9 @@ CdbDispatchUtilityStatement(struct Node *stmt,
 {
 	DispatchCommandQueryParms *pQueryParms;
 	bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
-	bool withSnapshot = flags & DF_WITH_SNAPSHOT;
 
-	dtmPreCommand("CdbDispatchUtilityStatement",
-				  debug_query_string ? debug_query_string : "(none)",
-				  NULL, needTwoPhase, withSnapshot,
-				  false /* inCursor */ );
+	if (needTwoPhase)
+		setupTwoPhaseTransaction();
 
 	elogif((Debug_print_full_dtm || log_min_messages <= DEBUG5), LOG,
 		   "CdbDispatchUtilityStatement: %s (needTwoPhase = %s)",
@@ -429,7 +438,7 @@ cdbdisp_dispatchCommandInternal(DispatchCommandQueryParms *pQueryParms,
 
 	cdbdisp_dispatchToGang(ds, primaryGang, -1);
 
-	if ((flags & DF_NEED_TWO_PHASE) != 0)
+	if ((flags & DF_NEED_TWO_PHASE) != 0 || isDtxExplicitBegin())
 		addToGxactTwophaseSegments(primaryGang);
 
 	cdbdisp_waitDispatchFinish(ds);
@@ -439,10 +448,7 @@ cdbdisp_dispatchCommandInternal(DispatchCommandQueryParms *pQueryParms,
 	pr = cdbdisp_getDispatchResults(ds, &qeError);
 
 	if (qeError)
-	{
-		cdbdisp_destroyDispatcherState(ds);
 		ReThrowError(qeError);
-	}
 
 	cdbdisp_returnResults(pr, cdb_pgresults);
 
@@ -1149,13 +1155,13 @@ cdbdisp_dispatchX(QueryDesc* queryDesc,
 			if (InterruptPending)
 				break;
 		}
-		SIMPLE_FAULT_INJECTOR(BeforeOneSliceDispatched);
+		SIMPLE_FAULT_INJECTOR("before_one_slice_dispatched");
 
 		cdbdisp_dispatchToGang(ds, primaryGang, si);
-		if (planRequiresTxn)
+		if (planRequiresTxn || isDtxExplicitBegin())
 			addToGxactTwophaseSegments(primaryGang);
 
-		SIMPLE_FAULT_INJECTOR(AfterOneSliceDispatched);
+		SIMPLE_FAULT_INJECTOR("after_one_slice_dispatched");
 	}
 
 	pfree(sliceVector);
@@ -1181,8 +1187,6 @@ cdbdisp_dispatchX(QueryDesc* queryDesc,
 		 * report it and exit via PG_THROW.
 		 */
 		cdbdisp_getDispatchResults(ds, &qeError);
-
-		cdbdisp_destroyDispatcherState(ds);
 
 		if (qeError)
 			ReThrowError(qeError);
@@ -1410,12 +1414,9 @@ CdbDispatchCopyStart(struct CdbCopy *cdbCopy, Node *stmt, int flags)
 	Gang *primaryGang;
 	ErrorData *error = NULL;
 	bool needTwoPhase = flags & DF_NEED_TWO_PHASE;
-	bool withSnapshot = flags & DF_WITH_SNAPSHOT;
 
-	dtmPreCommand("CdbDispatchCopyStart",
-				  debug_query_string ? debug_query_string : "(none)",
-				  NULL, needTwoPhase, withSnapshot,
-				  false /* inCursor */ );
+	if (needTwoPhase)
+		setupTwoPhaseTransaction();
 
 	elogif((Debug_print_full_dtm || log_min_messages <= DEBUG5), LOG,
 		   "CdbDispatchCopyStart: %s (needTwoPhase = %s)",
@@ -1440,7 +1441,7 @@ CdbDispatchCopyStart(struct CdbCopy *cdbCopy, Node *stmt, int flags)
 	cdbdisp_makeDispatchParams (ds, 1, queryText, queryTextLength);
 
 	cdbdisp_dispatchToGang(ds, primaryGang, -1);
-	if ((flags & DF_NEED_TWO_PHASE) != 0)
+	if ((flags & DF_NEED_TWO_PHASE) != 0 || isDtxExplicitBegin())
 		addToGxactTwophaseSegments(primaryGang);
 
 	cdbdisp_waitDispatchFinish(ds);
@@ -1448,11 +1449,7 @@ CdbDispatchCopyStart(struct CdbCopy *cdbCopy, Node *stmt, int flags)
 	cdbdisp_checkDispatchResult(ds, DISPATCH_WAIT_NONE);
 
 	if (!cdbdisp_getDispatchResults(ds, &error))
-	{
-		Assert(error);
-		cdbdisp_destroyDispatcherState(ds);
 		ReThrowError(error);
-	}
 
 	/*
 	 * Notice: Do not call cdbdisp_finishCommand to destroy dispatcher state,
@@ -1493,7 +1490,7 @@ formIdleSegmentIdList(void)
 		{
 			CdbComponentDatabaseInfo *cdi = &cdbs->segment_db_info[i];
 			for (j = 0; j < cdi->numIdleQEs; j++)
-				segments = lappend_int(segments, cdi->segindex);
+				segments = lappend_int(segments, cdi->config->segindex);
 		}
 	}
 

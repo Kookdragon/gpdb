@@ -149,6 +149,7 @@ extern bool Gp_is_writer;
  * session throughout the entire Greenplum array.
  */
 extern int gp_session_id;
+#define InvalidGpSessionId	(-1)
 
 /* The Hostname where this segment's QD is located. This variable is NULL for the QD itself */
 extern char * qdHostname;
@@ -381,17 +382,6 @@ extern int	Gp_interconnect_debug_retry_interval;
 
 /* UDP recv buf size in KB.  For testing */
 extern int 	Gp_udp_bufsize_k;
-
-/*
- * Parameter Gp_interconnect_hash_multiplier
- *
- * The run-time parameter Gp_interconnect_hash_multiplier
- * controls the number of hash buckets used to track 'connections.'
- *
- * This guc is specific to the UDP-interconnect.
- *
- */
-extern int	Gp_interconnect_hash_multiplier;
 
 /*
  * Parameter gp_interconnect_aggressive_retry
@@ -646,35 +636,6 @@ extern bool gp_eager_one_phase_agg;
  */
 extern bool gp_eager_two_phase_agg;
 
-/*
- * "gp_enable_groupext_distinct_pruning"
- *
- * Should Greenplum bias planner estimates so as to favor the use of
- * grouping in the first phases of 3-phase aggregation to prune values
- * from DISTINCT-qualified aggregate function arguments on a grouping
- * extension query?
- */
-extern bool gp_enable_groupext_distinct_pruning;
-
-/*
- * "gp_enable_groupext_distinct_gather"
- *
- * Should Greenplum bias planner estimates so as to favor the use of
- * gathering motion to gather the data into a single node to compute
- * DISTINCT-qualified aggregates on a grouping extension query?
- */
-extern bool gp_enable_groupext_distinct_gather;
-
-/*
- * "gp_distinct_grouping_sets_threshold"
- *
- * The planner will treat gp_enable_groupext_distinct_pruning as 'off'
- * when the number of grouping sets that have been rewritten based
- * on the multi-phrase aggregation exceeds the threshold value here divided by
- * the number of distinct-qualified aggregates.
- */
-extern int gp_distinct_grouping_sets_threshold;
-
 /* May Greenplum apply Unique operator (and possibly a Sort) in parallel prior
  * to the collocation motion for a Unique operator?  The idea is to reduce
  * the number of rows moving over the interconnect.
@@ -860,6 +821,7 @@ typedef struct GpId
  * Global variable declaration for the data for the single row of gp_id table
  */
 extern GpId GpIdentity;
+extern int get_dbid_string_length(void);
 #define UNINITIALIZED_GP_IDENTITY_VALUE (-10000)
 #define IS_QUERY_DISPATCHER() (GpIdentity.segindex == MASTER_CONTENT_ID)
 
@@ -871,7 +833,7 @@ extern uint32 Gp_listener_port;
 /*
  * Thread-safe routine to write to the log
  */
-extern void write_log(const char *fmt,...) __attribute__((format(printf, 1, 2)));
+extern void write_log(const char *fmt,...) pg_attribute_printf(1, 2);
 
 
 extern void increment_command_count(void);

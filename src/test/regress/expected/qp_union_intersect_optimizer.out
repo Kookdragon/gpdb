@@ -1731,6 +1731,40 @@ UPDATE dml_union_r SET b = ( SELECT a FROM dml_union_r EXCEPT ALL SELECT a FROM 
 ERROR:  one or more assertions failed  (seg1 antova-mbp.local:40011 pid=42293)
 DETAIL:  Expected no more than one row to be returned by expression
 --
+-- Test mixing a set-returning function, which can be evaluated anywhere,
+-- (it has General locus) and a diststributed table, in an Append.
+--
+explain (costs off)
+select a from dml_union_r where a > 95
+union all
+select g from generate_series(1,2) g;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Gather Motion 3:1  (slice1; segments: 3)
+   ->  Append
+         ->  Seq Scan on dml_union_r
+               Filter: (a > 95)
+         ->  Result
+               One-Time Filter: (gp_execution_segment() = 0)
+               ->  Function Scan on generate_series
+ Optimizer: Pivotal Optimizer (GPORCA) version 3.72.0
+(8 rows)
+
+select a from dml_union_r where a > 95
+union all
+select g from generate_series(1,2) g;
+  a  
+-----
+  98
+   1
+   2
+  96
+ 100
+  97
+  99
+(7 rows)
+
+--
 -- Test for creation of MergeAppend paths.
 --
 -- We used to have a bug in creation of MergeAppend paths, so that this failed
@@ -1779,7 +1813,7 @@ order by 1,2;
                            ->  Aggregate
                                  ->  Gather Motion 3:1  (slice1; segments: 3)
                                        ->  Seq Scan on mergeappend_test mergeappend_test_1
- Optimizer: PQO version 2.74.0
+ Optimizer: Pivotal Optimizer (GPORCA) version 2.74.0
 (17 rows)
 
 -- This used to trip an assertion in MotionStateFinderWalker(), when we were
@@ -1831,7 +1865,7 @@ order by 1,2;
    (slice2)    Executor memory: 215K bytes (entry db).
    (slice3)    Executor memory: 229K bytes avg x 3 workers, 244K bytes max (seg0).  Work_mem: 49K bytes max.
  Memory used:  128000kB
- Optimizer: PQO version 3.18.0
+ Optimizer: Pivotal Optimizer (GPORCA) version 3.18.0
  Execution time: 3.142 ms
 (26 rows)
 

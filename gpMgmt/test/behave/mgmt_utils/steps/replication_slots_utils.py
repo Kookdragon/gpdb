@@ -6,9 +6,8 @@ from test.behave_utils.utils import (
     stop_database,
     run_command,
     stop_primary,
-    trigger_fts_probe,
-    run_gprecoverseg,
     execute_sql,
+    wait_for_unblocked_transactions,
 )
 
 
@@ -20,25 +19,20 @@ def assert_successful_command(context):
         raise Exception('%s : %s' % (context.error_message, context.stdout_message))
 
 
-def run_recovery_for_segments(context):
-    run_command(context, "gprecoverseg -aFv")
-    assert_successful_command(context)
-
-
 def create_cluster(context, with_mirrors=True):
     context.initial_cluster_size = 3
     context.current_cluster_size = context.initial_cluster_size
 
+    os.environ['PGPORT'] = '15432'
+
     cmd = """
     cd ../gpAux/gpdemo; \
-        export MASTER_DEMO_PORT={master_port} && \
         export DEMO_PORT_BASE={port_base} && \
         export NUM_PRIMARY_MIRROR_PAIRS={num_primary_mirror_pairs} && \
         export WITH_MIRRORS={with_mirrors} && \A
         ./demo_cluster.sh -d && ./demo_cluster.sh -c && \
         ./demo_cluster.sh
-    """.format(master_port=os.getenv('MASTER_PORT', 15432),
-               port_base=os.getenv('PORT_BASE', 25432),
+    """.format(port_base=os.getenv('PORT_BASE', 15432),
                num_primary_mirror_pairs=os.getenv(
                    'NUM_PRIMARY_MIRROR_PAIRS', context.initial_cluster_size),
                with_mirrors=('true' if with_mirrors else 'false'))
@@ -57,8 +51,8 @@ def expand(context):
     ensure_temp_directory_is_empty(context, "behave_test_expansion_mirror")
 
     expansion_command = """gpexpand --input <(echo '
-    localhost:localhost:25438:/tmp/behave_test_expansion_primary:8:3:p
-    localhost:localhost:25439:/tmp/behave_test_expansion_mirror:9:3:m
+    localhost|localhost|25438|/tmp/behave_test_expansion_primary|8|3|p
+    localhost|localhost|25439|/tmp/behave_test_expansion_mirror|9|3|m
 ')
 """
     # Initialize
@@ -88,6 +82,7 @@ def step_impl(context):
 @when(u'a mirror has crashed')
 def step_impl(context):
     run_command(context, "ps aux | grep dbfast_mirror1 | awk '{print $2}' | xargs kill -9")
+    wait_for_unblocked_transactions(context)
 
 
 @when(u'I create a cluster')
@@ -128,15 +123,12 @@ def step_impl(context):
 @given(u'a preferred primary has failed')
 def step_impl(context):
     stop_primary(context, 0)
+    wait_for_unblocked_transactions(context)
 
 
 @when('primary and mirror switch to non-preferred roles')
 def step_impl(context):
-    trigger_fts_probe()
-    run_gprecoverseg()
-
     ensure_primary_mirror_switched_roles()
-
 
 
 @given("I cluster with no mirrors")
@@ -152,11 +144,6 @@ def step_impl(context):
 @given("I create a cluster")
 def step_impl(context):
     create_cluster(context, with_mirrors=True)
-
-
-@when("I fully recover a mirror")
-def step_impl(context):
-    run_recovery_for_segments(context)
 
 
 @when("I add a segment to the cluster")

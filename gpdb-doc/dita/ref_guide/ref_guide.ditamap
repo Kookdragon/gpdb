@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE map PUBLIC "-//OASIS//DTD DITA Map//EN" "map.dtd">
 <map>
-	<topicref href="../../6-0/homenav.html" scope="external" navtitle="Greenplum Database® 6.0 Documentation"
-		format="html" otherprops="oss-only"/>
-	<topicref href="../../6-0/homenav.html" scope="external" navtitle="Pivotal Greenplum® 6.0 Documentation"
-		format="html" otherprops="pivotal"/>
-	<topicref href="ref_guide.xml" navtitle="Reference Guide">
+	<topicref href="../../6-0/homenav.html" scope="external"
+		navtitle="Greenplum Database® 6.0 Documentation" format="html" otherprops="oss-only"/>
+	<topicref href="../../6-0/homenav.html" scope="external"
+		navtitle="Pivotal Greenplum® 6.0 Documentation" format="html" otherprops="pivotal"/>
+	<topicref href="ref_guide.xml">
+		<topicref href="000-temp.ditamap" format="ditamap"/>
 		<topicref href="sql_commands/sql_ref.xml">
 			<topicref href="GPReferenceSQLSummaryLOP.xml"/>
 			<topicref href="sql_commands/ABORT.xml"/>
 			<topicref href="sql_commands/ALTER_AGGREGATE.xml"/>
-      <topicref href="sql_commands/ALTER_COLLATION.xml"/>
+			<topicref href="sql_commands/ALTER_COLLATION.xml"/>
 			<topicref href="sql_commands/ALTER_CONVERSION.xml"/>
 			<topicref href="sql_commands/ALTER_DATABASE.xml"/>
 			<topicref href="sql_commands/ALTER_DEFAULT_PRIVILEGES.xml"/>
@@ -23,6 +24,7 @@
 			<topicref href="sql_commands/ALTER_GROUP.xml"/>
 			<topicref href="sql_commands/ALTER_INDEX.xml"/>
 			<topicref href="sql_commands/ALTER_LANGUAGE.xml"/>
+			<topicref href="sql_commands/ALTER_MATERIALIZED_VIEW.xml"/>
 			<topicref href="sql_commands/ALTER_OPERATOR.xml"/>
 			<topicref href="sql_commands/ALTER_OPERATOR_CLASS.xml"/>
 			<topicref href="sql_commands/ALTER_OPERATOR_FAMILY.xml"/>
@@ -33,7 +35,6 @@
 			<topicref href="sql_commands/ALTER_SCHEMA.xml"/>
 			<topicref href="sql_commands/ALTER_SEQUENCE.xml"/>
 			<topicref href="sql_commands/ALTER_SERVER.xml"/>
-      <topicref href="sql_commands/ALTER_SYSTEM.xml"/>
 			<topicref href="sql_commands/ALTER_TABLE.xml"/>
 			<topicref href="sql_commands/ALTER_TABLESPACE.xml"/>
 			<topicref href="sql_commands/ALTER_TEXT_SEARCH_CONFIGURATION.xml"/>
@@ -55,7 +56,7 @@
 			<topicref href="sql_commands/COPY.xml"/>
 			<topicref href="sql_commands/CREATE_AGGREGATE.xml"/>
 			<topicref href="sql_commands/CREATE_CAST.xml"/>
-      <topicref href="sql_commands/CREATE_COLLATION.xml"/>
+			<topicref href="sql_commands/CREATE_COLLATION.xml"/>
 			<topicref href="sql_commands/CREATE_CONVERSION.xml"/>
 			<topicref href="sql_commands/CREATE_DATABASE.xml"/>
 			<topicref href="sql_commands/CREATE_DOMAIN.xml"/>
@@ -67,6 +68,7 @@
 			<topicref href="sql_commands/CREATE_GROUP.xml"/>
 			<topicref href="sql_commands/CREATE_INDEX.xml"/>
 			<topicref href="sql_commands/CREATE_LANGUAGE.xml"/>
+			<topicref href="sql_commands/CREATE_MATERIALIZED_VIEW.xml"/>
 			<topicref href="sql_commands/CREATE_OPERATOR.xml"/>
 			<topicref href="sql_commands/CREATE_OPERATOR_CLASS.xml"/>
 			<topicref href="sql_commands/CREATE_OPERATOR_FAMILY.xml"/>
@@ -97,7 +99,7 @@
 			<topicref href="sql_commands/DO.xml"/>
 			<topicref href="sql_commands/DROP_AGGREGATE.xml"/>
 			<topicref href="sql_commands/DROP_CAST.xml"/>
-      <topicref href="sql_commands/DROP_COLLATION.xml"/>
+			<topicref href="sql_commands/DROP_COLLATION.xml"/>
 			<topicref href="sql_commands/DROP_CONVERSION.xml"/>
 			<topicref href="sql_commands/DROP_DATABASE.xml"/>
 			<topicref href="sql_commands/DROP_DOMAIN.xml"/>
@@ -109,6 +111,7 @@
 			<topicref href="sql_commands/DROP_GROUP.xml"/>
 			<topicref href="sql_commands/DROP_INDEX.xml"/>
 			<topicref href="sql_commands/DROP_LANGUAGE.xml"/>
+			<topicref href="sql_commands/DROP_MATERIALIZED_VIEW.xml"/>
 			<topicref href="sql_commands/DROP_OPERATOR.xml"/>
 			<topicref href="sql_commands/DROP_OPERATOR_CLASS.xml"/>
 			<topicref href="sql_commands/DROP_OPERATOR_FAMILY.xml"/>
@@ -143,6 +146,7 @@
 			<topicref href="sql_commands/MOVE.xml"/>
 			<topicref href="sql_commands/PREPARE.xml"/>
 			<topicref href="sql_commands/REASSIGN_OWNED.xml"/>
+			<topicref href="sql_commands/REFRESH_MATERIALIZED_VIEW.xml"/>
 			<topicref href="sql_commands/REINDEX.xml"/>
 			<topicref href="sql_commands/RELEASE_SAVEPOINT.xml"/>
 			<topicref href="sql_commands/RESET.xml"/>
@@ -164,9 +168,18 @@
 			<topicref href="sql_commands/VACUUM.xml"/>
 			<topicref href="sql_commands/VALUES.xml"/>
 		</topicref>
-		<topicref href="SQL2008_support.xml"/>
-		<topicref href="env_var_ref.xml" navtitle="Greenplum Environment Variables" id="env_var_ref"/>
-		<topicref href="system_catalogs/catalog_ref.xml#topic1">
+		<topicref href="data_types.xml" id="data_types">
+			<topicref href="datatype-datetime.xml"/>
+			<topicref href="datatype-pseudo.xml"/>
+			<topicref href="datatype-textsearch.xml"/>
+			<topicref href="datatype-range.xml"/>
+		</topicref>
+		<topicref href="function-summary.xml" id="func_summary"/>
+		<topicref href="extensions/extensions.ditamap" format="ditamap"/>
+		<topicref href="modules/modules.ditamap" format="ditamap"/>
+		<topicref href="character_sets.xml" id="character_sets"/>
+		<topicref href="config_params/guc_config.ditamap" id="guc_config" format="ditamap"/>
+		<topicref href="system_catalogs/catalog_ref.xml">
 			<topicref href="system_catalogs/catalog_ref-tables.xml#topic1"/>
 			<topicref href="system_catalogs/catalog_ref-views.xml#topic1"/>
 			<topicref href="system_catalogs/catalog_ref-html.xml#topic1">
@@ -228,6 +241,7 @@
 				<topicref href="system_catalogs/pg_largeobject.xml"/>
 				<topicref href="system_catalogs/pg_listener.xml"/>
 				<topicref href="system_catalogs/pg_locks.xml"/>
+				<topicref href="system_catalogs/pg_matviews.xml"/>
 				<topicref href="system_catalogs/pg_max_external_files.xml"/>
 				<topicref href="system_catalogs/pg_namespace.xml"/>
 				<topicref href="system_catalogs/pg_opclass.xml"/>
@@ -249,6 +263,7 @@
 				<topicref href="system_catalogs/pg_resqueuecapability.xml"/>
 				<topicref href="system_catalogs/pg_rewrite.xml"/>
 				<topicref href="system_catalogs/pg_roles.xml"/>
+				<topicref href="system_catalogs/pg_rules.xml"/>
 				<topicref href="system_catalogs/pg_shdepend.xml"/>
 				<topicref href="system_catalogs/pg_shdescription.xml"/>
 				<topicref href="system_catalogs/pg_stat_activity.xml"/>
@@ -271,35 +286,7 @@
 		</topicref>
 		<topicref href="gp_toolkit.ditamap" format="ditamap"/>
 		<topicref href="gpperfmon/gpperfmon.ditamap" format="ditamap"/>
-		<topicref href="data_types.xml" navtitle="Greenplum Database Data Types" id="data_types">
-			<topicref href="datatype-datetime.xml"/>
-			<topicref href="datatype-pseudo.xml"/>
-			<topicref href="datatype-textsearch.xml"/>
-			<topicref href="datatype-range.xml"/>
-		</topicref>
-		<topicref href="character_sets.xml" navtitle="Character Set Support" id="character_sets"/>
-		<topicref href="config_params/guc_config.ditamap" navtitle="Server Configuration Parameters"
-			id="guc_config" format="ditamap"/>
-		<topicref href="function-summary.xml" id="func_summary"/>
-		<topicref href="yaml_spec.xml" navtitle="Greenplum MapReduce Specification" id="yaml_spec"/>
-		<topicref href="extensions/pl_sql.xml" navtitle="Greenplum PL/pgSQL Extension" id="pl_sql"/>
-		<topicref href="extensions/postGIS.xml" navtitle="Greenplum PostGIS Extension" id="postGIS"
-			otherprops="pivotal"/>
-		<topicref href="extensions/pl_r.xml" navtitle="Greenplum PL/R Language Extension" id="pl_r"/>
-		<topicref href="extensions/pl_python.xml" navtitle="Greenplum PL/Python Language Extension"
-			id="pl_python"/>
-		<topicref href="extensions/pl_container.xml" navtitle="Greenplum PL/Container Extension"
-			id="pl_container"/>
-		<topicref href="extensions/pl_java.xml" navtitle="Greenplum PL/Java Language Extension"
-			id="pl_java"/>
-		<topicref href="extensions/pl_perl.xml" navtitle="Greenplum PL/Perl Language Extension"
-			id="pl_perl"/>
-		<topicref href="extensions/madlib.xml" navtitle="Greenplum MADlib Extension for Analytics"
-			id="madlib"/>
-		<topicref href="modules/modules.ditamap" format="ditamap"/>
-		<topicref href="extensions/gppc.xml" navtitle="Greenplum Partner Connector API" id="gppc"/>
-		<topicref href="extensions/bgworker.xml"/>
-		<topicref href="feature_summary.xml" navtitle="Summary of Greenplum Features"
-			id="feature_summary"/>
+		<topicref href="extensions/serverapi.ditamap" format="ditamap"/>
+		<topicref href="misc.ditamap" format="ditamap"/>
 	</topicref>
 </map>

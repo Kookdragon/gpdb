@@ -9,10 +9,13 @@ from gppylib.mainUtils import getProgramName
 import copy
 import datetime
 import os
+import random
 import sys
-import socket
+import json
+import shutil
 import signal
 import traceback
+from collections import defaultdict
 from time import strftime, sleep
 
 try:
@@ -33,10 +36,10 @@ try:
     from gppylib.gpcatalog import MASTER_ONLY_TABLES
     from gppylib.operations.package import SyncPackages
     from gppylib.operations.utils import ParallelOperation
-    from gppylib.parseutils import line_reader, parse_gpexpand_segment_line, \
-        canonicalize_address
+    from gppylib.parseutils import line_reader, check_values, canonicalize_address
     from gppylib.heapchecksum import HeapChecksum
     from gppylib.commands.pg import PgBaseBackup
+    from gppylib.mainUtils import ExceptionNoStackTraceNeeded
 
 except ImportError, e:
     sys.exit('ERROR: Cannot import modules.  Please check that you have sourced greenplum_path.sh.  Detail: ' + str(e))
@@ -142,6 +145,8 @@ def parseargs():
                       help='show this help message and exit.')
     parser.add_option('-s', '--silent', action='store_true',
                       help='Do not prompt for confirmation to proceed on warnings')
+    parser.add_option('', '--hba-hostnames', action='store_true', default=False,
+                      help='use hostnames instead of CIDR in pg_hba.conf')
     parser.add_option('--usage', action="briefhelp")
 
     parser.set_defaults(verbose=False, filters=[], slice=(None, None))
@@ -569,7 +574,7 @@ class SegmentTemplate:
 
     def __init__(self, logger, statusLogger, pool,
                  gparray, masterDataDirectory,
-                 dburl, conn, tempDir, batch_size,
+                 dburl, conn, tempDir, batch_size, is_hba_hostnames,
                  segTarDir='.', schemaTarFile='gpexpand_schema.tar'):
         self.logger = logger
         self.statusLogger = statusLogger
@@ -584,6 +589,7 @@ class SegmentTemplate:
         self.maxDbId = self.gparray.get_max_dbid()
         self.segTarDir = segTarDir
         self.segTarFile = os.path.join(segTarDir, self.schema_tar_file)
+        self.isHbaHostnames = is_hba_hostnames
 
         hosts = []
         for seg in self.gparray.getExpansionSegDbList():
@@ -616,10 +622,11 @@ class SegmentTemplate:
 
         return consolidatedHosts
 
-    def build_segment_template(self):
+    def build_segment_template(self, newTableSpaceInfo=None):
         """Builds segment template tar file"""
         self.statusLogger.set_status('BUILD_SEGMENT_TEMPLATE_STARTED', self.tempDir)
-        self._create_template()
+        # build segment template should consider tablespace files
+        self._create_template(newTableSpaceInfo)
         self._fixup_template()
         self._tar_template()
         self.statusLogger.set_status('BUILD_SEGMENT_TEMPLATE_DONE')
@@ -633,7 +640,7 @@ class SegmentTemplate:
         numNewSegments = len(self.gparray.getExpansionSegDbList())
         self.statusLogger.set_status('BUILD_SEGMENTS_DONE', numNewSegments)
 
-    def _create_template(self):
+    def _create_template(self, newTableSpaceInfo=None):
         """Creates the schema template that is used by new segments"""
         self.logger.info('Creating segment template')
 
@@ -643,16 +650,88 @@ class SegmentTemplate:
 
         self.conn.close()
 
+        # pg_basebackup in GreenplumDB need a parameter 'target_gp_dbid'
+        # it uses it to create tablespace-related data dirs in corresponding
+        # tablespace locations. Here we are using pg_basebackup to create
+        # a template for gpexpand so  we can just provide a dummyDBID
+        # to make sure the name is different from any dbids in the system.
+        dummyDBID = self._gen_DummyDBID()
+
         try:
             masterSeg = self.gparray.master
             cmd = PgBaseBackup(pgdata=self.tempDir,
                                host=masterSeg.getSegmentHostName(),
                                port=str(masterSeg.getSegmentPort()),
                                recovery_mode=False,
-                               target_gp_dbid=masterSeg.getSegmentDbId())
+                               target_gp_dbid=dummyDBID)
             cmd.run(validateAfter=True)
         except Exception, msg:
             raise SegmentTemplateError(msg)
+
+        # new segments' tablespace info is loaded from tablespace
+        # input files if provided. If newTableSpaceInfo is None,
+        # then there are no user-created tablespaces in the system,
+        # no need to consider tablespace problems in gpexpand.
+        if newTableSpaceInfo:
+            self._handle_tablespace_template(dummyDBID, newTableSpaceInfo)
+
+    def _handle_tablespace_template(self, dummyDBID, newTableSpaceInfo):
+        """
+        If there are user-created tablespaces in GreenplumDB cluster, we
+        have to pack them into the template. The logic here contains two
+        steps:
+          1. move the tablespace files generated by pg_basebackup into the
+             directory `tempDir/pg_tblspc/dumps`.
+          2. save the restore-paths of tablespace files on newsegments in
+             a json file `tempDir/pg_tblspc/newTableSpaceInfo.json`
+
+        newTableSpaceInfo is a python dict, its type spec is:
+          newTableSpaceInfo :: {
+                                  "names" : [ name::string ],
+                                  "oids"  : [ oid::string ],
+                                  "details" : {
+                                                   dbid::string : [ location::string ]
+                                              }
+                               }
+          newTableSpaceInfo[names] and newTableSpaceInfo[oids] are tablespace infos
+          that are in the same order.
+          newTableSpaceInfo[dbid] is a list of locations in the same order of oids.
+        """
+        master_tblspc_dir = self.gparray.master.getSegmentTableSpaceDirectory()
+        tbcspc_oids = os.listdir(master_tblspc_dir)
+
+        # tablespace_template_dir is the path we store tablespace files generated
+        # by pg_basebackup. Its directory structure is:
+        #   tablespace_template_dir
+        #     |__ oid1
+        #     |      |__ tablespace_file1_db_dumpdbid
+        #     |
+        #     |__ oid2
+        #     |      |__ tablespace_file2_db_dumpdbid
+        #     ...
+        tablespace_template_dir = os.path.join(self.tempDir,
+                                               "pg_tblspc",
+                                               "dumps")
+        os.mkdir(tablespace_template_dir)
+
+        for tbcspc_oid in tbcspc_oids:
+            symlink_path = os.path.join(master_tblspc_dir, tbcspc_oid)
+            target_path = os.readlink(symlink_path)
+            os.mkdir(os.path.join(tablespace_template_dir, tbcspc_oid))
+            # the target name for copytree does not impact anything
+            shutil.copytree(target_path,
+                        os.path.join(tablespace_template_dir, tbcspc_oid, str(dummyDBID)))
+            shutil.rmtree(os.path.join(os.path.dirname(target_path),
+                                       str(dummyDBID)))
+
+        with open(os.path.join(self.tempDir,
+                               "pg_tblspc",
+                               "newTableSpaceInfo.json"), "w") as f:
+            json.dump(newTableSpaceInfo, f)
+
+    def _gen_DummyDBID(self):
+        """gen a random int that surely beyond the possible dbid range"""
+        return random.randint(40960, 81920)
 
     def _select_src_segment(self):
         """Gets a segment to use as a source for pg_hba.conf
@@ -741,6 +820,26 @@ class SegmentTemplate:
                                             verbose=gplog.logging_is_verbose(), batchSize=self.batch_size,
                                             ctxt=REMOTE, remoteHost=host)
             self.pool.addCommand(segCfgCmd)
+
+        self.pool.join()
+        self.pool.check_results()
+
+        # Map primary and mirror hostnames to expanded segment's contentid
+        m = defaultdict(lambda: [])
+        for seg in self.gparray.getExpansionSegDbList():
+            m[seg.getSegmentContentId()].append(seg.getSegmentHostName())
+
+        # Now update the primary's hba config with the corresponding primary
+        # and mirror information
+        for seg in self.gparray.getExpansionSegDbList():
+            if seg.isSegmentPrimary():
+                modifyConfCmd = ModifyPgHbaConfSetting(
+                        'Updating %s/pg_hba.conf' % seg.getSegmentHostName(),
+                        os.path.join(seg.getSegmentDataDirectory(), 'pg_hba.conf'),
+                        ctxt=REMOTE, remoteHost=seg.getSegmentHostName(),
+                        addresses=m[seg.getSegmentContentId()],
+                        is_hba_hostnames=self.isHbaHostnames)
+                self.pool.addCommand(modifyConfCmd)
 
         self.pool.join()
         self.pool.check_results()
@@ -904,7 +1003,7 @@ class gpexpand:
         # make sure gpexpand schema doesn't exist since it wasn't in DB provided
         if not gpexpand_db_status:
             """
-            MPP-14145 - If there's no discernable status, the schema must not exist.
+            MPP-14145 - If there's no discernible status, the schema must not exist.
 
             The checks in get_status_from_db claim to look for existence of the 'gpexpand' schema, but more accurately they're
             checking for non-emptiness of the gpexpand.status table. If the table were empty, but the schema did exist, gpexpand would presume
@@ -992,7 +1091,7 @@ class gpexpand:
         logger.info("Generating input file...")
 
         for db in self.gparray.getExpansionSegDbList():
-            tempStr = "%s:%s:%d:%s:%d:%d:%s" % (canonicalize_address(db.getSegmentHostName())
+            tempStr = "%s|%s|%d|%s|%d|%d|%s" % (canonicalize_address(db.getSegmentHostName())
                                                 , canonicalize_address(db.getSegmentAddress())
                                                 , db.getSegmentPort()
                                                 , db.getSegmentDataDirectory()
@@ -1005,6 +1104,45 @@ class gpexpand:
         outfile.close()
 
         return outputfile
+
+    def generate_tablespace_inputfile(self, filename):
+        master_tblspc_dir = self.gparray.master.getSegmentTableSpaceDirectory()
+        tblspc_oids = os.listdir(master_tblspc_dir)
+        if not tblspc_oids:
+            return None
+
+        tblspc_oid_names = self.get_tablespace_oid_names()
+        tblspc_info = {}
+
+        for oid in tblspc_oids:
+            location = os.path.dirname(os.readlink(os.path.join(master_tblspc_dir,
+                                                                oid)))
+            tblspc_info[oid] = {"location": location,
+                                "name": tblspc_oid_names[int(oid)]}
+
+        with open(filename, 'w') as f:
+            names = "|".join([tblspc_info[oid]["name"]
+                              for oid in tblspc_oids])
+            oids = "|".join(tblspc_oids)
+            headline = "tableSpaceNameOrders={names}".format(names=names)
+            secline = "tableSpaceOidOrders={oids}".format(oids=oids)
+            print >>f, headline
+            print >>f, secline
+
+            for db in self.gparray.getExpansionSegDbList():
+                if db.isSegmentPrimary():
+                    tmpStr = "{dbid}|{locations}"
+                    locations = "|".join([tblspc_info[oid]["location"]
+                                          for oid in tblspc_oids])
+                    print >>f, tmpStr.format(dbid=db.getSegmentDbId(),
+                                             locations=locations)
+
+        return filename
+
+    def get_tablespace_oid_names(self):
+        sql = "select oid, spcname from pg_tablespace"
+        cursor = dbconn.execSQL(self.conn, sql)
+        return dict(cursor.fetchall())
 
     def addNewSegments(self, inputFileEntryList):
         for seg in inputFileEntryList:
@@ -1022,6 +1160,22 @@ class gpexpand:
         except Exception, e:
             raise ExpansionError('Invalid input file: %s' % e)
 
+    def _getParsedRow(self, lineno, line):
+        parts = line.split('|')
+        if len(parts) != 7:
+            raise ExceptionNoStackTraceNeeded("expected 7 parts, obtained %d" % len(parts))
+        hostname, address, port, datadir, dbid, contentId, role = parts
+        check_values(lineno, address=address, port=port, datadir=datadir, content=contentId,
+                     hostname=hostname, dbid=dbid, role=role)
+        return NewSegmentInput(hostname=hostname
+                                        , port=port
+                                        , address=address
+                                        , datadir=datadir
+                                        , dbid=dbid
+                                        , contentId=contentId
+                                        , role=role
+                                        )
+
     def read_input_files(self, inputFilename=None):
         """Reads and validates line format of the input file passed
         in on the command line via the -i arg"""
@@ -1037,45 +1191,65 @@ class gpexpand:
 
         try:
             f = open(inputFilename, 'r')
-            try:
-                for line, l in line_reader(f):
-
-                    hostname, address, port, datadir, dbid, contentId, role \
-                        = parse_gpexpand_segment_line(inputFilename, line, l)
-
-                    # Check that input values look reasonable.
-                    if hostname is None or len(hostname) == 0:
-                        raise ExpansionError("Invalid host name on line " + str(line))
-                    if address is None or len(address) == 0:
-                        raise ExpansionError("Invalid address on line " + str(line))
-                    if port is None or str(port).isdigit() == False or int(port) < 0:
-                        raise ExpansionError("Invalid port number on line " + str(line))
-                    if datadir is None or len(datadir) == 0:
-                        raise ExpansionError("Invalid data directory on line " + str(line))
-                    if dbid is None or str(dbid).isdigit() == False or int(dbid) < 0:
-                        raise ExpansionError("Invalid dbid on line " + str(line))
-                    if contentId is None or str(contentId).isdigit() == False or int(contentId) < 0:
-                        raise ExpansionError("Invalid contentId on line " + str(line))
-                    if role is None or len(role) > 1 or (role != 'p' and role != 'm'):
-                        raise ExpansionError("Invalid role on line " + str(line))
-
-                    retValue.append(NewSegmentInput(hostname=hostname
-                                                    , port=port
-                                                    , address=address
-                                                    , datadir=datadir
-                                                    , dbid=dbid
-                                                    , contentId=contentId
-                                                    , role=role
-                                                    ))
-            except ValueError:
-                raise ExpansionError('Missing or invalid value on line %d.' % line)
-            except Exception, e:
-                raise ExpansionError('Invalid input file on line %d: %s' % (line, str(e)))
-            finally:
-                f.close()
-            return retValue
+            for lineno, line in line_reader(f):
+                try:
+                    retValue.append(self._getParsedRow(lineno, line))
+                except ValueError:
+                    raise ExpansionError('Missing or invalid value on line %d of file %s.' % (lineno, inputFilename))
+                except Exception, e:
+                    raise ExpansionError('Invalid input file on line %d of file %s: %s' % (lineno, inputFilename, str(e)))
         except IOError:
-            raise ExpansionError('Input file %s not found' % self.options.filename)
+            raise ExpansionError('Input file %s not found' % inputFilename)
+        finally:
+            if f is not None:
+                f.close()
+
+        return retValue
+
+    def read_tablespace_file(self):
+        """
+        If there are user-created tablespaces in GreenplumDB cluster,
+        it returns a python dict, otherwise returns None.
+        The python dict is like:
+        newTableSpaceInfo is a python dict, its type spec is:
+          newTableSpaceInfo :: {
+                                  "names" : [ name::string ],
+                                  "oids"  : [ oid::string ],
+                                  "details" : {
+                                                   dbid::string : [ location::string ]
+                                              }
+                               }
+          newTableSpaceInfo[names] and newTableSpaceInfo[oids] are tablespace infos
+          that are in the same order.
+          newTableSpaceInfo[dbid] is a list of locations in the same order of oids.
+        """
+        master_tblspc_dir = self.gparray.master.getSegmentTableSpaceDirectory()
+        if not os.listdir(master_tblspc_dir):
+            return None
+
+        if not self.options.filename:
+            raise ExpansionError('Missing tablespace input file')
+
+        tablespace_inputfile = self.options.filename + ".ts"
+
+        new_tblspc_info = {}
+
+        with open(tablespace_inputfile) as f:
+            headline = f.readline().strip()
+            secline = f.readline().strip()
+            tblspc_names = headline.split('=')[1].strip().split('|')
+            tblspc_oids = secline.split('=')[1].strip().split('|')
+            new_tblspc_info["names"] = tblspc_names
+            new_tblspc_info["oids"] = tblspc_oids
+            details = {}
+            for line in f:
+                l = line.strip().split('|')
+                dbid = l[0]
+                locations = l[1:]
+                details[dbid] = locations
+            new_tblspc_info["details"] = details
+
+        return new_tblspc_info
 
     def lock_catalog(self):
         self.conn_catalog_lock = dbconn.connect(self.dburl, utility=True, encoding='UTF8')
@@ -1093,7 +1267,7 @@ class gpexpand:
         self.conn_catalog_lock = None
         self.logger.info('Unlocked catalog')
 
-    def add_segments(self):
+    def add_segments(self, newTableSpaceInfo):
         """Starts the process of adding the new segments to the array"""
         self.segTemplate = SegmentTemplate(logger=self.logger,
                                            statusLogger=self.statusLogger,
@@ -1104,9 +1278,10 @@ class gpexpand:
                                            conn=self.conn,
                                            tempDir=self.tempDir,
                                            segTarDir=self.options.tardir,
-                                           batch_size=self.options.batch_size)
+                                           batch_size=self.options.batch_size,
+                                           is_hba_hostnames=self.options.hba_hostnames)
         try:
-            self.segTemplate.build_segment_template()
+            self.segTemplate.build_segment_template(newTableSpaceInfo)
             self.segTemplate.build_new_segments()
         except SegmentTemplateError, msg:
             raise ExpansionError(msg)
@@ -1806,7 +1981,7 @@ class ExpandTable():
 
     def expand(self, table_conn, cancel_flag):
         # for root partition, we want to expand whose partition in one shot
-        # TODO: expand leaf partitions seperately in parallel
+        # TODO: expand leaf partitions separately in parallel
         only_str = "" if self.is_root_partition else "ONLY"
         external_str = "EXTERNAL" if self.external_writable else ""
         sql = 'ALTER %s TABLE %s %s EXPAND TABLE' % (external_str, only_str, self.fq_name)
@@ -2169,10 +2344,16 @@ before continuing by re-running this utility and providing the input file. """
 
     outfile = _gp_expand.generate_inputfile()
 
-    outFileStr = ""
     outFileStr = """\nInput configuration file was written to '%s'.""" % (outfile)
-
     print outFileStr
+
+    outfile_ts = _gp_expand.generate_tablespace_inputfile(outfile + ".ts")
+    if outfile_ts:
+        outFileTsStr = """Tablespace Input configuration file was written to '%s'.""" % (outfile_ts)
+        print outFileTsStr
+
+    print
+
     print """Please review the file and make sure that it is correct then re-run
 with: gpexpand -i %s
                 """ % (outfile)
@@ -2286,7 +2467,8 @@ def main(options, args, parser):
             _gp_expand.sync_packages()
             _gp_expand.start_prepare()
             _gp_expand.lock_catalog()
-            _gp_expand.add_segments()
+            newTableSpaceInfo = _gp_expand.read_tablespace_file()
+            _gp_expand.add_segments(newTableSpaceInfo)
             _gp_expand.update_original_segments()
             _gp_expand.cleanup_new_segments()
             _gp_expand.update_catalog()

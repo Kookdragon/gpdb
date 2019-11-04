@@ -2,7 +2,7 @@
 #
 # Makefile for src/bin/psql
 #
-# Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/bin/psql/Makefile
@@ -34,9 +34,6 @@ OBJS=	command.o common.o help.o input.o stringutils.o mainloop.o copy.o \
 	tab-complete.o mbprint.o dumputils.o keywords.o kwlookup.o \
 	sql_help.o \
 	$(WIN32RES)
-
-# The frontend doesn't need everything that's in LIBS, some are backend only
-LIBS := $(filter-out -lresolv -lbz2, $(LIBS))
 
 
 all: psql

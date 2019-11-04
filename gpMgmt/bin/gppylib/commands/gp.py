@@ -815,6 +815,28 @@ class ModifyConfSetting(Command):
         self.cmdStr = cmdStr
         Command.__init__(self, name, self.cmdStr, ctxt, remoteHost)
 
+class ModifyPgHbaConfSetting(Command):
+    def __init__(self, name, file, ctxt, remoteHost, addresses, is_hba_hostnames):
+        hba_content = ""
+
+        for address in addresses:
+            if is_hba_hostnames:
+                hba_content += "\nhost all {0} {1} trust".format(getUserName(), address)
+            else:
+                ips = InterfaceAddrs.remote('get mirror ips', address)
+                for ip in ips:
+                    cidr_suffix = '/128' if ':' in ip else '/32'
+                    cidr = ip + cidr_suffix
+                    hba_content += "\nhost all {0} {1} trust".format(getUserName(), cidr)
+
+        # You might think you can substitute the primary and mirror addresses
+        # with the new primary and mirror addresses, but what if they were the
+        # same? Then you could end up with only the new primary or new mirror
+        # address.
+        cmdStr = "echo '{0}' >> {1}".format(hba_content, file)
+        self.cmdStr = cmdStr
+        Command.__init__(self, name, self.cmdStr, ctxt, remoteHost)
+
 #-----------------------------------------------
 class GpCleanSegmentDirectories(Command):
     """
@@ -1005,29 +1027,31 @@ class GpCatVersionDirectory(Command):
         cmd.run(validateAfter=True)
         return cmd.get_version()
 
-#-----------------------------------------------
-class GpAddConfigScript(Command):
-    def __init__(self, name, directorystring, entry, value=None, removeonly=False, ctxt=LOCAL, remoteHost=None):
-        cmdStr="echo '%s' | $GPHOME/sbin/gpaddconfig.py --entry %s" % (directorystring, entry)
-        if value:
-            # value will be encoded and unencoded in the script to protect against shell interpretation
-            value = base64.urlsafe_b64encode(pickle.dumps(value))
-            cmdStr = cmdStr + " --value '" + value + "'"
-        if removeonly:
-            cmdStr = cmdStr + " --removeonly "
-
-        Command.__init__(self,name,cmdStr,ctxt,remoteHost)
 
 #-----------------------------------------------
-class GpAppendGucToFile(Command):
+class GpConfigHelper(Command):
+    def __init__(self, command_name, postgresconf_dir, name, value=None, segInfo=None, removeParameter=False, getParameter=False, ctxt=LOCAL, remoteHost=None):
+        self.segInfo = segInfo
 
-    # guc value will come in pickled and base64 encoded
+        addParameter = (not getParameter) and (not removeParameter)
+        if addParameter:
+            args = '--add-parameter %s --value %s ' % (name, base64.urlsafe_b64encode(pickle.dumps(value)))
+        if getParameter:
+            args = '--get-parameter %s' % name
+        if removeParameter:
+            args = '--remove-parameter %s' % name
 
-    def __init__(self,name,file,guc,value,ctxt=LOCAL,remoteHost=None):
-        unpickledText = pickle.loads(base64.urlsafe_b64decode(value))
-        finalText = unpickledText.replace('"', '\\\"')
-        cmdStr = 'echo "%s=%s" >> %s' %  (guc, finalText, file)
-        Command.__init__(self,name,cmdStr,ctxt,remoteHost)
+        cmdStr = "$GPHOME/sbin/gpconfig_helper.py --file %s %s" % (
+            os.path.join(postgresconf_dir, 'postgresql.conf'),
+            args)
+
+        Command.__init__(self, command_name, cmdStr, ctxt, remoteHost)
+
+    # FIXME: figure out how callers of this can handle exceptions here
+    def get_value(self):
+        raw_value = self.get_results().stdout
+        return pickle.loads(base64.urlsafe_b64decode(raw_value))
+
 
 #-----------------------------------------------
 class GpLogFilter(Command):
@@ -1540,47 +1564,6 @@ class GpRecoverSeg(Command):
 
        cmdStr = "$GPHOME/bin/gprecoverseg %s" % (options)
        Command.__init__(self,name,cmdStr,ctxt,remoteHost)
-
-class GpReadConfig(Command):
-    def __init__(self, name, seg, guc_name):
-        self.seg_db_id = seg.getSegmentDbId()
-        self.seg_content_id = seg.getSegmentContentId()
-        self.guc_name = guc_name
-        self.role = seg.getSegmentRole()
-        cat_path = findCmdInPath('cat')
-
-        cmdStr = "%s %s/postgresql.conf" % (cat_path, seg.getSegmentDataDirectory())
-        ctxt = LOCAL
-        remote_host = None
-        if seg.hostname != socket.gethostname():
-            ctxt = REMOTE
-            remote_host = seg.hostname
-        Command.__init__(self, name, cmdStr, ctxt, remote_host)
-
-    def get_guc_value(self):
-        std_out = self.get_results().stdout
-        std_out = std_out.split('\n')
-
-        VALUE_PATTERN = re.compile(".*=(.*)")
-
-        GUC_PATTERN = re.compile("^[\s]*" + self.guc_name + "[ \t]*=")
-
-        value = None
-        key_lines = [line for line in std_out if GUC_PATTERN.match(line)]
-        if key_lines:
-            value = VALUE_PATTERN.match(key_lines[-1]).group(1)
-            value = value.split('#')[0].strip()
-
-        return value
-
-    def get_seg_content_id(self):
-        return self.seg_content_id
-
-    def get_seg_role(self):
-        return self.role
-
-    def get_seg_dbid(self):
-        return self.seg_db_id
 
 
 if __name__ == '__main__':

@@ -5,7 +5,7 @@
  *
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present Pivotal Software, Inc.
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,6 +19,7 @@
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
+#include "optimizer/cost.h"
 #include "optimizer/joininfo.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -33,6 +34,7 @@
 #include "utils/lsyscache.h"
 
 #include "access/heapam.h"
+#include "cdb/cdbmutate.h"
 #include "nodes/makefuncs.h"
 #include "parser/parsetree.h"
 
@@ -61,6 +63,7 @@ static SpecialJoinInfo *make_outerjoininfo(PlannerInfo *root,
 				   Relids left_rels, Relids right_rels,
 				   Relids inner_join_rels,
 				   JoinType jointype, List *clause);
+static void compute_semijoin_info(SpecialJoinInfo *sjinfo, List *clause);
 static void distribute_qual_to_rels(PlannerInfo *root, Node *clause,
 						bool is_deduced,
 						bool below_outer_join,
@@ -174,8 +177,8 @@ build_base_rel_tlists(PlannerInfo *root, List *final_tlist)
  *	  be true before deconstruct_jointree begins, and false after that.)
  */
 void
-add_vars_to_targetlist(PlannerInfo *root, List *vars,
-					   Relids where_needed, bool create_new_ph)
+add_vars_to_targetlist_x(PlannerInfo *root, List *vars,
+						 Relids where_needed, bool create_new_ph, bool force)
 {
 	ListCell   *temp;
 
@@ -210,7 +213,7 @@ add_vars_to_targetlist(PlannerInfo *root, List *vars,
 			}
 
 			/* System-defined attribute, whole row, or user-defined attribute */
-			if (bms_is_subset(where_needed, rel->relids))
+			if (bms_is_subset(where_needed, rel->relids) && !force)
 				continue;
 			Assert(attno >= rel->min_attr && attno <= rel->max_attr);
 			attno -= rel->min_attr;
@@ -236,6 +239,12 @@ add_vars_to_targetlist(PlannerInfo *root, List *vars,
 		else
 			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
 	}
+}
+void
+add_vars_to_targetlist(PlannerInfo *root, List *vars, Bitmapset *where_needed,
+					   bool create_new_ph)
+{
+	add_vars_to_targetlist_x(root, vars, where_needed, create_new_ph, false);
 }
 
 
@@ -1198,7 +1207,8 @@ make_outerjoininfo(PlannerInfo *root,
 	sjinfo->jointype = jointype;
 	/* this always starts out false */
 	sjinfo->delay_upper_joins = false;
-	sjinfo->join_quals = clause;
+
+	compute_semijoin_info(sjinfo, clause);
 
 	/* If it's a full join, no need to be very smart */
 	if (jointype == JOIN_FULL)
@@ -1302,15 +1312,9 @@ make_outerjoininfo(PlannerInfo *root,
 		 * For a lower OJ in our RHS, if our join condition does not use the
 		 * lower join's RHS and the lower OJ's join condition is strict, we
 		 * can interchange the ordering of the two OJs; otherwise we must add
-		 * the lower OJ's full syntactic relset to min_righthand.
-		 *
-		 * Also, if our join condition does not use the lower join's LHS
-		 * either, force the ordering to be preserved.  Otherwise we can end
-		 * up with SpecialJoinInfos with identical min_righthands, which can
-		 * confuse join_is_legal (see discussion in backend/optimizer/README).
-		 *
-		 * Also, we must preserve ordering anyway if either the current join
-		 * or the lower OJ is a semijoin, antijoin or lasj.
+		 * the lower OJ's full syntactic relset to min_righthand.  Also, we
+		 * must preserve ordering anyway if either the current join or the
+		 * lower OJ is either a semijoin or an antijoin.
 		 *
 		 * Here, we have to consider that "our join condition" includes any
 		 * clauses that syntactically appeared above the lower OJ and below
@@ -1385,6 +1389,182 @@ make_outerjoininfo(PlannerInfo *root,
 	sjinfo->min_righthand = min_righthand;
 
 	return sjinfo;
+}
+
+/*
+ * compute_semijoin_info
+ *	  Fill semijoin-related fields of a new SpecialJoinInfo
+ *
+ * Note: this relies on only the jointype and syn_righthand fields of the
+ * SpecialJoinInfo; the rest may not be set yet.
+ */
+static void
+compute_semijoin_info(SpecialJoinInfo *sjinfo, List *clause)
+{
+	List	   *semi_operators;
+	List	   *semi_rhs_exprs;
+	bool		all_btree;
+	bool		all_hash;
+	ListCell   *lc;
+
+	/* Initialize semijoin-related fields in case we can't unique-ify */
+	sjinfo->semi_can_btree = false;
+	sjinfo->semi_can_hash = false;
+	sjinfo->semi_operators = NIL;
+	sjinfo->semi_rhs_exprs = NIL;
+
+	/* Nothing more to do if it's not a semijoin */
+	if (sjinfo->jointype != JOIN_SEMI)
+		return;
+
+	/*
+	 * Look to see whether the semijoin's join quals consist of AND'ed
+	 * equality operators, with (only) RHS variables on only one side of each
+	 * one.  If so, we can figure out how to enforce uniqueness for the RHS.
+	 *
+	 * Note that the input clause list is the list of quals that are
+	 * *syntactically* associated with the semijoin, which in practice means
+	 * the synthesized comparison list for an IN or the WHERE of an EXISTS.
+	 * Particularly in the latter case, it might contain clauses that aren't
+	 * *semantically* associated with the join, but refer to just one side or
+	 * the other.  We can ignore such clauses here, as they will just drop
+	 * down to be processed within one side or the other.  (It is okay to
+	 * consider only the syntactically-associated clauses here because for a
+	 * semijoin, no higher-level quals could refer to the RHS, and so there
+	 * can be no other quals that are semantically associated with this join.
+	 * We do things this way because it is useful to have the set of potential
+	 * unique-ification expressions before we can extract the list of quals
+	 * that are actually semantically associated with the particular join.)
+	 *
+	 * Note that the semi_operators list consists of the joinqual operators
+	 * themselves (but commuted if needed to put the RHS value on the right).
+	 * These could be cross-type operators, in which case the operator
+	 * actually needed for uniqueness is a related single-type operator. We
+	 * assume here that that operator will be available from the btree or hash
+	 * opclass when the time comes ... if not, create_unique_plan() will fail.
+	 */
+	semi_operators = NIL;
+	semi_rhs_exprs = NIL;
+	all_btree = true;
+	all_hash = enable_hashagg;	/* don't consider hash if not enabled */
+	foreach(lc, clause)
+	{
+		OpExpr	   *op = (OpExpr *) lfirst(lc);
+		Oid			opno;
+		Node	   *left_expr;
+		Node	   *right_expr;
+		Relids		left_varnos;
+		Relids		right_varnos;
+		Relids		all_varnos;
+		Oid			opinputtype;
+
+		/* Is it a binary opclause? */
+		if (!IsA(op, OpExpr) ||
+			list_length(op->args) != 2)
+		{
+			/* No, but does it reference both sides? */
+			all_varnos = pull_varnos((Node *) op);
+			if (!bms_overlap(all_varnos, sjinfo->syn_righthand) ||
+				bms_is_subset(all_varnos, sjinfo->syn_righthand))
+			{
+				/*
+				 * Clause refers to only one rel, so ignore it --- unless it
+				 * contains volatile functions, in which case we'd better
+				 * punt.
+				 */
+				if (contain_volatile_functions((Node *) op))
+					return;
+				continue;
+			}
+			/* Non-operator clause referencing both sides, must punt */
+			return;
+		}
+
+		/* Extract data from binary opclause */
+		opno = op->opno;
+		left_expr = linitial(op->args);
+		right_expr = lsecond(op->args);
+		left_varnos = pull_varnos(left_expr);
+		right_varnos = pull_varnos(right_expr);
+		all_varnos = bms_union(left_varnos, right_varnos);
+		opinputtype = exprType(left_expr);
+
+		/* Does it reference both sides? */
+		if (!bms_overlap(all_varnos, sjinfo->syn_righthand) ||
+			bms_is_subset(all_varnos, sjinfo->syn_righthand))
+		{
+			/*
+			 * Clause refers to only one rel, so ignore it --- unless it
+			 * contains volatile functions, in which case we'd better punt.
+			 */
+			if (contain_volatile_functions((Node *) op))
+				return;
+			continue;
+		}
+
+		/* check rel membership of arguments */
+		if (!bms_is_empty(right_varnos) &&
+			bms_is_subset(right_varnos, sjinfo->syn_righthand) &&
+			!bms_overlap(left_varnos, sjinfo->syn_righthand))
+		{
+			/* typical case, right_expr is RHS variable */
+		}
+		else if (!bms_is_empty(left_varnos) &&
+				 bms_is_subset(left_varnos, sjinfo->syn_righthand) &&
+				 !bms_overlap(right_varnos, sjinfo->syn_righthand))
+		{
+			/* flipped case, left_expr is RHS variable */
+			opno = get_commutator(opno);
+			if (!OidIsValid(opno))
+				return;
+			right_expr = left_expr;
+		}
+		else
+		{
+			/* mixed membership of args, punt */
+			return;
+		}
+
+		/* all operators must be btree equality or hash equality */
+		if (all_btree)
+		{
+			/* oprcanmerge is considered a hint... */
+			if (!op_mergejoinable(opno, opinputtype) ||
+				get_mergejoin_opfamilies(opno) == NIL)
+				all_btree = false;
+		}
+		if (all_hash)
+		{
+			/* ... but oprcanhash had better be correct */
+			if (!op_hashjoinable(opno, opinputtype))
+				all_hash = false;
+		}
+		if (!(all_btree || all_hash))
+			return;
+
+		/* so far so good, keep building lists */
+		semi_operators = lappend_oid(semi_operators, opno);
+		semi_rhs_exprs = lappend(semi_rhs_exprs, copyObject(right_expr));
+	}
+
+	/* Punt if we didn't find at least one column to unique-ify */
+	if (semi_rhs_exprs == NIL)
+		return;
+
+	/*
+	 * The expressions we'd need to unique-ify mustn't be volatile.
+	 */
+	if (contain_volatile_functions((Node *) semi_rhs_exprs))
+		return;
+
+	/*
+	 * If we get here, we can unique-ify the semijoin's RHS using at least one
+	 * of sorting and hashing.  Save the information about how to do that.
+	 */
+	sjinfo->semi_can_btree = all_btree;
+	sjinfo->semi_can_hash = all_hash;
+	sjinfo->semi_operators = semi_operators;
+	sjinfo->semi_rhs_exprs = semi_rhs_exprs;
 }
 
 
@@ -2021,6 +2201,43 @@ check_redundant_nullability_qual(PlannerInfo *root, Node *clause)
 	return false;
 }
 
+static bool
+rel_need_upper(PlannerInfo *root, RelOptInfo *rel)
+{
+	switch (rel->rtekind)
+	{
+		case RTE_RELATION:
+			return GpPolicyIsPartitioned(rel->cdbpolicy) ||
+				GpPolicyIsReplicated(rel->cdbpolicy);
+
+		case RTE_SUBQUERY:
+			/* play it safe */
+			return true;
+
+		case RTE_FUNCTION:
+			/* XXX: depends on EXECUTE ON directive */
+			return false;
+
+		case RTE_VALUES:
+			return false;
+
+		case RTE_TABLEFUNCTION:
+			/* no correlated subqueries are allowed in a tablefunctions. So not sure
+			 * if this can happen */
+			return true;
+
+		case RTE_CTE:
+			/* play it safe */
+			return true;
+
+		case RTE_VOID:
+		case RTE_JOIN:
+		default:
+			/* shouldn't happen */
+			elog(ERROR, "unexpected RTE kind %d", rel->rtekind);
+	}
+}
+
 /*
  * distribute_restrictinfo_to_rels
  *	  Push a completed RestrictInfo into the proper restriction or join
@@ -2037,6 +2254,9 @@ distribute_restrictinfo_to_rels(PlannerInfo *root,
 	Relids		relids = restrictinfo->required_relids;
 	RelOptInfo *rel;
 
+	if (contains_outer_params((Node *) restrictinfo->clause, root))
+		restrictinfo->contain_outer_query_references = true;
+
 	switch (bms_membership(relids))
 	{
 		case BMS_SINGLETON:
@@ -2048,8 +2268,24 @@ distribute_restrictinfo_to_rels(PlannerInfo *root,
 			rel = find_base_rel(root, bms_singleton_member(relids));
 
 			/* Add clause to rel's restriction list */
-			rel->baserestrictinfo = lappend(rel->baserestrictinfo,
-											restrictinfo);
+			if (restrictinfo->contain_outer_query_references &&
+				rel_need_upper(root, rel))
+			{
+				List	   *vars = pull_var_clause((Node *) restrictinfo->clause,
+												   PVC_RECURSE_AGGREGATES,
+												   PVC_RECURSE_PLACEHOLDERS);
+
+				add_vars_to_targetlist_x(root, vars, relids,
+										 false, /* create_new_ph */
+										 true /* force */);
+				list_free(vars);
+
+				rel->upperrestrictinfo = lappend(rel->upperrestrictinfo,
+												 restrictinfo);
+			}
+			else
+				rel->baserestrictinfo = lappend(rel->baserestrictinfo,
+												restrictinfo);
 			break;
 		case BMS_MULTIPLE:
 

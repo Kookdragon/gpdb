@@ -28,7 +28,10 @@ Assuming all of the above, you can just run the tool as so:
 import argparse
 import os
 import sys
-import subprocess
+try:
+    import subprocess32 as subprocess
+except:
+    import subprocess
 import threading
 import datetime
 import time
@@ -366,7 +369,7 @@ class ClusterConfiguration():
         print '%s: fetched cluster configuration' % (datetime.datetime.now())
 
         try:
-            with dbconn.connect(dburl, utility=True) as conn:
+            with dbconn.connect(dburl, utility=True, unsetSearchPath=False) as conn:
                resultsets  = dbconn.execSQL(conn, query).fetchall()
         except Exception, e:
             print e

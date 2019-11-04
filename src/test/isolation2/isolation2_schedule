@@ -1,8 +1,15 @@
+test: setup
+
+test: lockmodes
 test: ao_partition_lock
+test: dml_on_root_locks_all_parts
 
 test: select_dropped_table
 # test update hash col under utility mode
 test: update_hash_col_utilitymode
+
+# test delete/update when there are tuples with wrong distribution on segments.
+test: modifytable_with_bad_distribution
 
 # Tests for crash recovery
 test: uao_crash_compaction_column
@@ -15,19 +22,34 @@ test: unlogged_appendonly_tables
 test: udf_exception_blocks_panic_scenarios
 
 # Tests on global deadlock detector
-test: select_for_update
 test: gdd/prepare
 test: gdd/dist-deadlock-01 gdd/dist-deadlock-04 gdd/dist-deadlock-05 gdd/dist-deadlock-06 gdd/dist-deadlock-07 gdd/dist-deadlock-102 gdd/dist-deadlock-103 gdd/dist-deadlock-104 gdd/dist-deadlock-106 gdd/non-lock-105
 # until we can improve below flaky case please keep it disabled
 ignore: gdd/non-lock-107
 # keep this in a separate group
+test: gdd/extended_protocol_test
 test: gdd/avoid-qd-deadlock
-test: gdd/prepare-for-local
+test: gdd/delete-deadlock-root-leaf-concurrent-op
+test: gdd/planner_insert_while_vacuum_drop
+test: gdd/update-deadlock-root-leaf-concurrent-op
+test: gdd/dml_locks_only_targeted_table_in_query
+
+# this resets the gp_global_deadlock_detector_period guc hence should
+# be last in the group.
 test: gdd/local-deadlock-03
 # gdd end
 test: gdd/end
 
-test: pg_terminate_backend deadlock_under_entry_db_singleton starve_case pg_views_concurrent_drop alter_blocks_for_update_and_viceversa drop_rename reader_waits_for_lock resource_queue misc
+# The following test injects a fault at a generic location
+# (StartTransaction).  The fault can be easily triggered by a
+# concurrent test, so run the test by itself.
+test: deadlock_under_entry_db_singleton
+
+test: starve_case pg_views_concurrent_drop alter_blocks_for_update_and_viceversa drop_rename reader_waits_for_lock resource_queue misc
+test: vacuum_drop_phase_ao
+
+# below test(s) inject faults so each of them need to be in a separate group
+test: pg_terminate_backend
 
 # this case contains fault injection, must be put in a separate test group
 test: terminate_in_gang_creation
@@ -47,7 +69,9 @@ test: distributed_snapshot
 test: gp_collation
 test: ao_upgrade
 
-test: setup
+# below test utilizes fault injectors so it needs to be in a group by itself
+test: external_table
+
 # Tests on Append-Optimized tables (row-oriented).
 test: concurrent_index_creation_should_not_deadlock
 test: uao/alter_while_vacuum_row uao/alter_while_vacuum2_row
@@ -95,6 +119,8 @@ test: uao/vacuum_while_vacuum_row
 test: uao/vacuum_cleanup_row
 test: uao/insert_should_not_use_awaiting_drop_row
 test: reorganize_after_ao_vacuum_skip_drop truncate_after_ao_vacuum_skip_drop mark_all_aoseg_await_drop
+# below test(s) inject faults so each of them need to be in a separate group
+test: segwalrep/master_xlog_switch
 
 # Tests on Append-Optimized tables (column-oriented).
 test: uao/alter_while_vacuum_column uao/alter_while_vacuum2_column
@@ -151,8 +177,12 @@ test: segwalrep/fts_unblock_primary
 test: segwalrep/mirror_promotion
 test: segwalrep/cancel_commit_pending_replication
 test: segwalrep/twophase_tolerance_with_mirror_promotion
+test: segwalrep/failover_with_many_records
+test: segwalrep/dtm_recovery_on_standby
+test: segwalrep/commit_blocking_on_standby
 test: pg_basebackup
 test: pg_basebackup_with_tablespaces
+test: fts_manual_probe
 
 # Reindex tests
 test: reindex/abort_reindex
@@ -186,14 +216,12 @@ test: upgrade_numsegments
 
 # OOM tests start
 test: create_memory_accounting_tables 
-test: setup_memory_accounting
-test: oom_query
-test: oom_mixed_1 oom_mixed_2 oom_simple
-test: restore_memory_accounting_default
+ignore: setup_memory_accounting
+ignore: oom_mixed_1 oom_mixed_2 oom_simple
+ignore: restore_memory_accounting_default
 # Sleep and OOM tests end
 
-# Too many exec accounts test start
-test: setup_too_many_exec_accounts
-test: oom_too_many_accounts
+# Startup OOM tests start
+test: setup_startup_memory_accounting
+test: oom_startup_memory
 test: restore_memory_accounting_default
-#Too many exec account tests end

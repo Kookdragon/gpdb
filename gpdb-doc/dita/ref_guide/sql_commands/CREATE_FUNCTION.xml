@@ -42,7 +42,7 @@
             <p>To be able to create a function, you must have <codeph>USAGE</codeph> privilege on
                 the argument types and the return type.</p>
             <p>For more information about creating functions, see the <xref
-                    href="https://www.postgresql.org/docs/8.3/xfunc.html" scope="external"
+                    href="https://www.postgresql.org/docs/9.4/xfunc.html" scope="external"
                     format="html">User Defined Functions</xref> section of the PostgreSQL
                 documentation.</p><sectiondiv id="section4"><b>Limited Use of VOLATILE and STABLE
                     Functions</b><p>To prevent data from becoming out-of-sync across the segments in
@@ -276,7 +276,7 @@ SELECT foo();</codeblock><p>In
                     <pt>COST <varname>execution_cost</varname></pt>
                     <pd>A positive number identifying the estimated execution cost for the function,
                         in <xref
-                            href="https://www.postgresql.org/docs/8.3/runtime-config-query.html#GUC-CPU-OPERATOR-COST"
+                            href="https://www.postgresql.org/docs/9.4/runtime-config-query.html#GUC-CPU-OPERATOR-COST"
                             scope="external" format="html">cpu_operator_cost</xref> units. If the
                         function returns a set, <varname>execution_cost</varname> identifies the
                         cost per returned row. If the cost is not specified, C-language and internal
@@ -290,8 +290,9 @@ SELECT foo();</codeblock><p>In
                     <pd>The <codeph>SET</codeph> clause applies a value to a session configuration
                         parameter when the function is entered. The configuration parameter is
                         restored to its prior value when the function exits. <codeph>SET FROM
-                            CURRENT</codeph> applies the session's current value of the parameter
-                        when the function is entered.</pd>
+                            CURRENT</codeph> saves the value of the parameter that is current when
+                            <codeph>CREATE FUNCTION</codeph> is executed as the value to be applied
+                        when the function is entered. </pd>
                 </plentry>
                 <plentry>
                     <pt><varname>definition</varname></pt>
@@ -308,7 +309,11 @@ SELECT foo();</codeblock><p>In
                         dynamically loadable object, and <varname>link_symbol</varname> is the name
                         of the function in the C language source code. If the link symbol is
                         omitted, it is assumed to be the same as the name of the SQL function being
-                        defined. It is recommended to locate shared libraries either relative to
+                        defined. The C names
+                        of all functions must be different, so you must give overloaded SQL
+                        functions different C names (for example, use the argument types as
+                        part of the C names).
+                        It is recommended to locate shared libraries either relative to
                             <codeph>$libdir</codeph> (which is located at
                             <codeph>$GPHOME/lib</codeph>) or through the dynamic library path (set
                         by the <codeph>dynamic_library_path</codeph> server configuration
@@ -428,7 +433,7 @@ $SomeTag$Dianne's horse$SomeTag$</codeblock>
                     <li>The function cannot be in the <codeph>SELECT</codeph> list of a query with a
                             <codeph>FROM</codeph> clause.</li>
                     <li>A query that includes the function falls back from GPORCA to the Postgres
-                        query planner.</li>
+                        Planner.</li>
                 </ul></sectiondiv></section>
         <section id="section8"><title>Examples</title><p>A very simple addition
                 function:</p><codeblock>CREATE FUNCTION add(integer, integer) RETURNS integer

@@ -35,6 +35,25 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 
+#define USECS_PER_SECOND 1000000
+#define MSECS_PER_SECOND 1000
+
+/*
+ * GpMonotonicTime: used to guarantee that the elapsed time is in
+ * the monotonic order between two gp_get_monotonic_time calls.
+ */
+typedef struct GpMonotonicTime
+{
+	struct timeval beginTime;
+	struct timeval endTime;
+} GpMonotonicTime;
+
+static void gp_set_monotonic_begin_time(GpMonotonicTime *time);
+static void gp_get_monotonic_time(GpMonotonicTime *time);
+static inline uint64 gp_get_elapsed_ms(GpMonotonicTime *time);
+static inline uint64 gp_get_elapsed_us(GpMonotonicTime *time);
+static inline int timeCmp(struct timeval *t1, struct timeval *t2);
+
 /*
  * backlog for listen() call: it is important that this be something like a
  * good match for the maximum number of QEs. Slow insert performance will
@@ -64,8 +83,6 @@ static ChunkTransportStateEntry *startOutgoingConnections(ChunkTransportState *t
 						 int *pOutgoingCount);
 
 static void format_fd_set(StringInfo buf, int nfds, mpp_fd_set *fds, char *pfx, char *sfx);
-static char *format_sockaddr(struct sockaddr *sa, char *buf, int bufsize);
-
 static void setupOutgoingConnection(ChunkTransportState *transportStates,
 						ChunkTransportStateEntry *pEntry, MotionConn *conn);
 static void updateOutgoingConnection(ChunkTransportState *transportStates,
@@ -134,9 +151,9 @@ setupTCPListeningSocket(int backlog, int *listenerSocketFd, uint16 *listenerPort
 	snprintf(service, 32, "%d", 0);
 	memset(&hints, 0, sizeof(struct addrinfo));
 	hints.ai_family = AF_UNSPEC;	/* Allow IPv4 or IPv6 */
-	hints.ai_socktype = SOCK_STREAM;	/* TCP socket */
+	hints.ai_socktype = SOCK_STREAM;	/* Two-way, out of band connection */
 	hints.ai_flags = AI_PASSIVE;	/* For wildcard IP address */
-	hints.ai_protocol = 0;		/* Any protocol */
+	hints.ai_protocol = 0;		/* Any protocol - TCP implied for network use due to SOCK_STREAM */
 
 	/*
 	 * We use INADDR_ANY if we don't have a valid address for ourselves (e.g.
@@ -282,10 +299,6 @@ InitMotionTCP(int *listenerSocketFd, uint16 *listenerPort)
 {
 	tval.tv_sec = 0;
 	tval.tv_usec = 500000;
-
-#ifdef pg_on_solaris
-	listenerBacklog = Min(1024, Max(getgpsegmentCount() * 4, listenerBacklog));
-#endif
 
 	setupTCPListeningSocket(listenerBacklog, listenerSocketFd, listenerPort);
 
@@ -782,7 +795,7 @@ sendRegisterMessage(ChunkTransportState *transportStates, ChunkTransportStateEnt
 					 errdetail("getsockname sockfd=%d remote=%s: %m",
 							   conn->sockfd, conn->remoteHostAndPort)));
 		}
-		format_sockaddr((struct sockaddr *) &localAddr, conn->localHostAndPort,
+		format_sockaddr(&localAddr, conn->localHostAndPort,
 						sizeof(conn->localHostAndPort));
 
 		if (gp_log_interconnect >= GPVARS_VERBOSITY_VERBOSE)
@@ -1176,7 +1189,7 @@ acceptIncomingConnection(void)
 	conn->remoteContentId = -2;
 
 	/* Save remote and local host:port strings for error messages. */
-	format_sockaddr((struct sockaddr *) &remoteAddr, conn->remoteHostAndPort,
+	format_sockaddr(&remoteAddr, conn->remoteHostAndPort,
 					sizeof(conn->remoteHostAndPort));
 	addrsize = sizeof(localAddr);
 	if (getsockname(newsockfd, (struct sockaddr *) &localAddr, &addrsize))
@@ -1187,7 +1200,7 @@ acceptIncomingConnection(void)
 				 errdetail("getsockname sockfd=%d remote=%s: %m",
 						   newsockfd, conn->remoteHostAndPort)));
 	}
-	format_sockaddr((struct sockaddr *) &localAddr, conn->localHostAndPort,
+	format_sockaddr(&localAddr, conn->localHostAndPort,
 					sizeof(conn->localHostAndPort));
 
 	/* make socket non-blocking */
@@ -1235,7 +1248,7 @@ SetupTCPInterconnect(EState *estate)
 	ChunkTransportStateEntry *sendingChunkTransportState = NULL;
 	ChunkTransportState *interconnect_context;
 
-	SIMPLE_FAULT_INJECTOR(InterconnectSetupPalloc);
+	SIMPLE_FAULT_INJECTOR("interconnect_setup_palloc");
 	interconnect_context = palloc0(sizeof(ChunkTransportState));
 
 	/* initialize state variables */
@@ -1266,10 +1279,6 @@ SetupTCPInterconnect(EState *estate)
 
 	gp_set_monotonic_begin_time(&startTime);
 
-	/* Initiate outgoing connections. */
-	if (mySlice->parentIndex != -1)
-		sendingChunkTransportState = startOutgoingConnections(interconnect_context, mySlice, &expectedTotalOutgoing);
-
 	/* now we'll do some setup for each of our Receiving Motion Nodes. */
 	foreach(cell, mySlice->children)
 	{
@@ -1298,6 +1307,17 @@ SetupTCPInterconnect(EState *estate)
 
 		(void) createChunkTransportState(interconnect_context, aSlice, mySlice, totalNumProcs);
 	}
+
+	/*
+	 * Initiate outgoing connections.
+	 *
+	 * startOutgoingConnections() and createChunkTransportState() must not be
+	 * called during the lifecycle of sendingChunkTransportState, they will
+	 * repalloc() interconnect_context->states so sendingChunkTransportState
+	 * points to invalid memory.
+	 */
+	if (mySlice->parentIndex != -1)
+		sendingChunkTransportState = startOutgoingConnections(interconnect_context, mySlice, &expectedTotalOutgoing);
 
 	if (expectedTotalIncoming > listenerBacklog)
 		ereport(WARNING, (errmsg("SetupTCPInterconnect: too many expected incoming connections(%d), Interconnect setup might possibly fail", expectedTotalIncoming),
@@ -1551,6 +1571,8 @@ SetupTCPInterconnect(EState *estate)
 		ML_CHECK_FOR_INTERRUPTS(interconnect_context->teardownActive);
 		n = select(highsock + 1, (fd_set *) &rset, (fd_set *) &wset, (fd_set *) &eset, &timeout);
 		ML_CHECK_FOR_INTERRUPTS(interconnect_context->teardownActive);
+		if (Gp_role == GP_ROLE_DISPATCH)
+			checkForCancelFromQD(interconnect_context);
 
 		elapsed_ms = gp_get_elapsed_ms(&startTime);
 
@@ -2113,80 +2135,6 @@ format_fd_set(StringInfo buf, int nfds, mpp_fd_set *fds, char *pfx, char *sfx)
 	appendStringInfoString(buf, sfx);
 }
 
-static char *
-format_sockaddr(struct sockaddr *sa, char *buf, int bufsize)
-{
-	/* Save remote host:port string for error messages. */
-	if (sa->sa_family == AF_INET)
-	{
-		struct sockaddr_in *sin = (struct sockaddr_in *) sa;
-		uint32		saddr = ntohl(sin->sin_addr.s_addr);
-
-		snprintf(buf, bufsize, "%d.%d.%d.%d:%d",
-				 (saddr >> 24) & 0xff,
-				 (saddr >> 16) & 0xff,
-				 (saddr >> 8) & 0xff,
-				 saddr & 0xff,
-				 ntohs(sin->sin_port));
-	}
-#ifdef HAVE_IPV6
-	else if (sa->sa_family == AF_INET6)
-	{
-		char		remote_port[32];
-
-		if (bufsize > 10)
-		{
-			buf[0] = '[';
-
-			/*
-			 * inet_ntop isn't portable. //inet_ntop(AF_INET6,
-			 * &sin6->sin6_addr, buf, bufsize - 8);
-			 *
-			 * postgres has a standard routine for converting addresses to
-			 * printable format, which works for IPv6, IPv4, and Unix domain
-			 * sockets.  I've changed this routine to use that, but I think
-			 * the entire format_sockaddr routine could be replaced with it.
-			 */
-			int			ret = pg_getnameinfo_all((const struct sockaddr_storage *) sa, sizeof(struct sockaddr_storage),
-												 buf + 1, bufsize - 10,
-												 remote_port, sizeof(remote_port),
-												 NI_NUMERICHOST | NI_NUMERICSERV);
-
-			if (ret != 0)
-			{
-				elog(LOG, "getnameinfo returned %d: %s, and says %s port %s", ret, gai_strerror(ret), buf, remote_port);
-
-				/*
-				 * Fall back to using our internal inet_ntop routine, which
-				 * really is for inet datatype This is because of a bug in
-				 * solaris, where getnameinfo sometimes fails Once we find out
-				 * why, we can remove this
-				 */
-				snprintf(remote_port, sizeof(remote_port), "%d", ((struct sockaddr_in6 *) sa)->sin6_port);
-
-				/*
-				 * This is nasty: our internal inet_net_ntop takes
-				 * PGSQL_AF_INET6, not AF_INET6, which is very odd... They are
-				 * NOT the same value (even though PGSQL_AF_INET == AF_INET
-				 */
-#define PGSQL_AF_INET6	(AF_INET + 1)
-				inet_net_ntop(PGSQL_AF_INET6, sa, sizeof(struct sockaddr_in6), buf + 1, bufsize - 10);
-				elog(LOG, "Our alternative method says %s]:%s", buf, remote_port);
-
-			}
-			buf += strlen(buf);
-			strcat(buf, "]");
-			buf++;
-		}
-		snprintf(buf, 8, ":%s", remote_port);
-	}
-#endif
-	else
-		snprintf(buf, bufsize, "?host?:?port?");
-
-	return buf;
-}								/* format_sockaddr */
-
 static void
 flushInterconnectListenerBacklog(void)
 {
@@ -2227,7 +2175,7 @@ flushInterconnectListenerBacklog(void)
 				if (gp_log_interconnect >= GPVARS_VERBOSITY_VERBOSE)
 				{
 					/* Get remote and local host:port strings for message. */
-					format_sockaddr((struct sockaddr *) &remoteAddr, remoteHostAndPort,
+					format_sockaddr(&remoteAddr, remoteHostAndPort,
 									sizeof(remoteHostAndPort));
 					addrsize = sizeof(localAddr);
 					if (getsockname(newfd, (struct sockaddr *) &localAddr, &addrsize))
@@ -2240,7 +2188,7 @@ flushInterconnectListenerBacklog(void)
 					}
 					else
 					{
-						format_sockaddr((struct sockaddr *) &localAddr, localHostAndPort,
+						format_sockaddr(&localAddr, localHostAndPort,
 										sizeof(localHostAndPort));
 						ereport(DEBUG2, (errmsg("Interconnect clearing incoming connection "
 												"from remote=%s to local=%s.  sockfd=%d.",
@@ -2840,4 +2788,122 @@ SendChunkTCP(ChunkTransportState *transportStates, ChunkTransportStateEntry *pEn
 
 	conn->tupleCount++;
 	return true;
+}
+
+
+
+/*
+ * gp_set_monotonic_begin_time: set the beginTime and endTime to the current
+ * time.
+ */
+static void
+gp_set_monotonic_begin_time(GpMonotonicTime *time)
+{
+	time->beginTime.tv_sec = 0;
+	time->beginTime.tv_usec = 0;
+	time->endTime.tv_sec = 0;
+	time->endTime.tv_usec = 0;
+
+	gp_get_monotonic_time(time);
+
+	time->beginTime.tv_sec = time->endTime.tv_sec;
+	time->beginTime.tv_usec = time->endTime.tv_usec;
+}
+
+
+/*
+ * gp_get_monotonic_time
+ *    This function returns the time in the monotonic order.
+ *
+ * The new time is stored in time->endTime, which has a larger value than
+ * the original value. The original endTime is lost.
+ *
+ * This function is intended for computing elapsed time between two
+ * calls. It is not for getting the system time.
+ */
+static void
+gp_get_monotonic_time(GpMonotonicTime *time)
+{
+	struct timeval newTime;
+	int status;
+
+#if HAVE_LIBRT
+	/* Use clock_gettime to return monotonic time value. */
+	struct timespec ts;
+	status = clock_gettime(CLOCK_MONOTONIC, &ts);
+
+	newTime.tv_sec = ts.tv_sec;
+	newTime.tv_usec = ts.tv_nsec / 1000;
+
+#else
+
+	gettimeofday(&newTime, NULL);
+	status = 0; /* gettimeofday always succeeds. */
+
+#endif
+
+	if (status == 0 &&
+		timeCmp(&time->endTime, &newTime) < 0)
+	{
+		time->endTime.tv_sec = newTime.tv_sec;
+		time->endTime.tv_usec = newTime.tv_usec;
+	}
+	else
+	{
+		time->endTime.tv_usec = time->endTime.tv_usec + 1;
+
+		time->endTime.tv_sec = time->endTime.tv_sec +
+			(time->endTime.tv_usec / USECS_PER_SECOND);
+		time->endTime.tv_usec = time->endTime.tv_usec % USECS_PER_SECOND;
+	}
+}
+
+/*
+ * Compare two times.
+ *
+ * If t1 > t2, return 1.
+ * If t1 == t2, return 0.
+ * If t1 < t2, return -1;
+ */
+static inline int
+timeCmp(struct timeval *t1, struct timeval *t2)
+{
+	if (t1->tv_sec == t2->tv_sec &&
+		t1->tv_usec == t2->tv_usec)
+		return 0;
+
+	if (t1->tv_sec > t2->tv_sec ||
+		(t1->tv_sec == t2->tv_sec &&
+		 t1->tv_usec > t2->tv_usec))
+		return 1;
+
+	return -1;
+}
+
+/*
+ * gp_get_elapsed_us -- return the elapsed time in microseconds
+ * after the given time->beginTime.
+ *
+ * If time->beginTime is not set (0), then return 0.
+ *
+ * Note that the beginTime is not changed, but the endTime is set
+ * to the current time.
+ */
+static inline uint64
+gp_get_elapsed_us(GpMonotonicTime *time)
+{
+	if (time->beginTime.tv_sec == 0 &&
+		time->beginTime.tv_usec == 0)
+		return 0;
+
+	gp_get_monotonic_time(time);
+
+	return ((time->endTime.tv_sec - time->beginTime.tv_sec) * USECS_PER_SECOND +
+			(time->endTime.tv_usec - time->beginTime.tv_usec));
+}
+
+static inline uint64
+gp_get_elapsed_ms(GpMonotonicTime *time)
+{
+	return gp_get_elapsed_us(time) / (USECS_PER_SECOND / MSECS_PER_SECOND);
 }

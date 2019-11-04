@@ -60,6 +60,7 @@ def _write_datadir_config_for_three_mirrors():
     return datadir_config
 
 
+@when("gpaddmirrors adds 3 mirrors")
 def add_three_mirrors(context):
     datadir_config = _write_datadir_config_for_three_mirrors()
     mirror_config_output_file = "/tmp/test_gpaddmirrors.config"
@@ -69,9 +70,9 @@ def add_three_mirrors(context):
     cmd.run(validateAfter=True)
 
 
-def add_mirrors(context):
+def add_mirrors(context, options):
     context.mirror_config = _generate_input_config()
-    cmd = Command('gpaddmirrors ', 'gpaddmirrors -a -i %s ' % context.mirror_config)
+    cmd = Command('gpaddmirrors ', 'gpaddmirrors -a -i %s %s' % (context.mirror_config, options))
     cmd.run(validateAfter=True)
 
 
@@ -85,11 +86,60 @@ def make_data_directory_called(data_directory_name):
 
 
 def _get_mirror_count():
-    with dbconn.connect(dbconn.DbURL(dbname='template1')) as conn:
+    with dbconn.connect(dbconn.DbURL(dbname='template1'), unsetSearchPath=False) as conn:
         sql = """SELECT count(*) FROM gp_segment_configuration WHERE role='m'"""
         count_row = dbconn.execSQL(conn, sql).fetchone()
         return count_row[0]
 
+# take the item in search_item_list, search pg_hba if it contains atleast one entry
+# for the item
+@given('pg_hba file "{filename}" on host "{host}" contains entries for "{search_items}"')
+@then('pg_hba file "{filename}" on host "{host}" contains entries for "{search_items}"')
+def impl(context, search_items, host, filename):
+    cmd_str = "ssh %s cat %s" % (host, filename)
+    cmd = Command(name='Running remote command: %s' % cmd_str, cmdStr=cmd_str)
+    cmd.run(validateAfter=False)
+    search_item_list = [search_item.strip() for search_item in search_items.split(',')]
+    pghba_contents= cmd.get_stdout().strip().split('\n')
+    for search_item in search_item_list:
+        found = False
+        for entry in pghba_contents:
+            contents = entry.strip()
+            # for example: host all all hostname    trust
+            if contents.startswith("host") and contents.endswith("trust"):
+                tokens = contents.split()
+                if len(tokens) != 5:
+                    raise Exception("failed to parse pg_hba.conf line '%s'" % contents)
+                hostname = tokens[3].strip()
+                if search_item == hostname:
+                    found = True
+                    break
+        if not found:
+            raise Exception("entry for expected item %s not existing in pg_hba.conf '%s'" % (search_item, pghba_contents))
+
+# ensure pg_hba contains only cidr addresses, exclude mandatory entries for replication samenet if existing
+@given('pg_hba file "{filename}" on host "{host}" contains only cidr addresses')
+@then('pg_hba file "{filename}" on host "{host}" contains only cidr addresses')
+def impl(context, host, filename):
+    cmd_str = "ssh %s cat %s" % (host, filename)
+    cmd = Command(name='Running remote command: %s' % cmd_str, cmdStr=cmd_str)
+    cmd.run(validateAfter=False)
+    pghba_contents= cmd.get_stdout().strip().split('\n')
+    for entry in pghba_contents:
+        contents = entry.strip()
+        # for example: host all all hostname    trust
+        if contents.startswith("host") and contents.endswith("trust"):
+            tokens = contents.split()
+            if len(tokens) != 5:
+                raise Exception("failed to parse pg_hba.conf line '%s'" % contents)
+            hostname = tokens[3].strip()
+            # ignore replication entries
+            if hostname == "samenet":
+                continue
+            if "/" in hostname:
+                continue
+            else:
+                raise Exception("not a valid cidr '%s' address" % hostname)
 
 @then('verify the database has mirrors')
 def impl(context):
@@ -97,11 +147,12 @@ def impl(context):
         raise Exception('No mirrors found')
 
 
+@given('gpaddmirrors adds mirrors with options "{options}"')
 @given('gpaddmirrors adds mirrors')
 @when('gpaddmirrors adds mirrors')
 @then('gpaddmirrors adds mirrors')
-def impl(context):
-    add_mirrors(context)
+def impl(context, options=" "):
+    add_mirrors(context, options)
 
 
 @given('gpaddmirrors adds mirrors with temporary data dir')
@@ -222,19 +273,33 @@ def impl(context, file_type):
     segments = GpArray.initFromCatalog(dbconn.DbURL()).getSegmentList()
     mirror = segments[0].mirrorDB
 
-    valid_config = '%s:%s:%s' % (mirror.getSegmentHostName(),
+    valid_config = '%s|%s|%s' % (mirror.getSegmentHostName(),
                                  mirror.getSegmentPort(),
                                  mirror.getSegmentDataDirectory())
 
     if file_type == 'malformed':
         contents = 'I really like coffee.'
     elif file_type == 'badhost':
-        badhost_config = '%s:%s:%s' % ('badhost',
+        badhost_config = '%s|%s|%s' % ('badhost',
                                        mirror.getSegmentPort(),
                                        context.mirror_context.working_directory)
         contents = '%s %s' % (valid_config, badhost_config)
+    elif file_type == 'samedir':
+        valid_config_with_same_dir = '%s|%s|%s' % (
+            mirror.getSegmentHostName(),
+            mirror.getSegmentPort() + 1000,
+            mirror.getSegmentDataDirectory()
+        )
+        contents = '%s %s' % (valid_config, valid_config_with_same_dir)
+    elif file_type == 'identicalAttributes':
+        valid_config_with_identical_attributes = '%s|%s|%s' % (
+            mirror.getSegmentHostName(),
+            mirror.getSegmentPort(),
+            mirror.getSegmentDataDirectory()
+        )
+        contents = '%s %s' % (valid_config, valid_config_with_identical_attributes)
     elif file_type == 'good':
-        valid_config_with_different_dir = '%s:%s:%s' % (
+        valid_config_with_different_dir = '%s|%s|%s' % (
             mirror.getSegmentHostName(),
             mirror.getSegmentPort(),
             context.mirror_context.working_directory
@@ -279,9 +344,9 @@ def impl(context, mirror_config):
 
     # Port numbers and addresses are hardcoded to TestCluster values, assuming a 3-host 2-segment cluster.
     input_filename = "/tmp/gpmovemirrors_input_%s" % mirror_config
-    line_template = "%s:%d:%s %s:%d:%s\n"
+    line_template = "%s|%d|%s %s|%d|%s\n"
 
-    # The mirrors for contents 0 and 3 are excluded from the two maps below because they are the same in either configuration    
+    # The mirrors for contents 0 and 3 are excluded from the two maps below because they are the same in either configuration
     # NOTE: this configuration of the GPDB cluster assumes that configuration set up in concourse's
     #   gpinitsystem task.  The maps below are from {contentID : (port|hostname)}.
 

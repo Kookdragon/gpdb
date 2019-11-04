@@ -3,7 +3,7 @@
  * postmaster.h
  *	  Exports from postmaster/postmaster.c.
  *
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/postmaster/postmaster.h
@@ -21,7 +21,6 @@ extern int	Unix_socket_permissions;
 extern char *Unix_socket_group;
 extern char *Unix_socket_directories;
 extern char *ListenAddresses;
-extern char *BackendListenAddress;
 extern bool ClientAuthInProgress;
 extern int	PreAuthDelay;
 extern int	AuthenticationTimeout;
@@ -54,7 +53,7 @@ extern int	postmaster_alive_fds[2];
 extern const char *progname;
 extern PGDLLIMPORT const char *progname;
 
-extern void PostmasterMain(int argc, char *argv[]) __attribute__((noreturn));
+extern void PostmasterMain(int argc, char *argv[]) pg_attribute_noreturn();
 extern void ClosePostmasterPorts(bool am_syslogger);
 
 extern int	MaxLivePostmasterChildren(void);
@@ -66,14 +65,15 @@ extern void ResetMirrorReadyFlag(void);
 
 #ifdef EXEC_BACKEND
 extern pid_t postmaster_forkexec(int argc, char *argv[]);
-extern void SubPostmasterMain(int argc, char *argv[]) __attribute__((noreturn));
+extern void SubPostmasterMain(int argc, char *argv[]) pg_attribute_noreturn();
 
 extern Size ShmemBackendArraySize(void);
 extern void ShmemBackendArrayAllocation(void);
 #endif
 
-/* CDB */
-typedef int (PMSubStartCallback)(void);
+extern void load_auxiliary_libraries(void);
+extern bool amAuxiliaryBgWorker(void);
+extern bool IsUnderMasterDispatchMode(void);
 
 /*
  * Note: MAX_BACKENDS is limited to 2^23-1 because inval.c stores the
@@ -83,5 +83,6 @@ typedef int (PMSubStartCallback)(void);
  * GUC check hooks and in RegisterBackgroundWorker().
  */
 #define MAX_BACKENDS	0x7fffff
+#define MaxPMAuxProc	6
 
 #endif   /* _POSTMASTER_H */

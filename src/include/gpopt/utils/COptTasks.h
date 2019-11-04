@@ -27,7 +27,7 @@
 // fwd decl
 namespace gpos
 {
-	class IMemoryPool;
+	class CMemoryPool;
 	class CBitSet;
 }
 
@@ -130,7 +130,7 @@ class COptTasks
 
 		// create optimizer configuration object
 		static
-		COptimizerConfig *CreateOptimizerConfig(IMemoryPool *mp, ICostModel *cost_model);
+		COptimizerConfig *CreateOptimizerConfig(CMemoryPool *mp, ICostModel *cost_model);
 
 		// optimize a query to a physical DXL
 		static
@@ -138,27 +138,15 @@ class COptTasks
 
 		// translate a DXL tree into a planned statement
 		static
-		PlannedStmt *ConvertToPlanStmtFromDXL(IMemoryPool *mp, CMDAccessor *md_accessor, const CDXLNode *dxlnode, bool can_set_tag, DistributionHashOpsKind distribution_hashops);
+		PlannedStmt *ConvertToPlanStmtFromDXL(CMemoryPool *mp, CMDAccessor *md_accessor, const CDXLNode *dxlnode, bool can_set_tag, DistributionHashOpsKind distribution_hashops);
 
 		// load search strategy from given path
 		static
-		CSearchStageArray *LoadSearchStrategy(IMemoryPool *mp, char *path);
+		CSearchStageArray *LoadSearchStrategy(CMemoryPool *mp, char *path);
 
 		// helper for converting wide character string to regular string
 		static
 		CHAR *CreateMultiByteCharStringFromWCString(const WCHAR *wcstr);
-
-		// lookup given exception type in the given array
-		static
-		BOOL FoundException(gpos::CException &exc, const ULONG *exceptions, ULONG size);
-
-		// check if given exception is an unexpected reason for failing to produce a plan
-		static
-		BOOL IsUnexpectedFailure(gpos::CException &exc);
-
-		// check if given exception should error out
-		static
-		BOOL ShouldErrorOut(gpos::CException &exc);
 
 		// set cost model parameters
 		static
@@ -166,11 +154,11 @@ class COptTasks
 
 		// generate an instance of optimizer cost model
 		static
-		ICostModel *GetCostModel(IMemoryPool *mp, ULONG num_segments);
+		ICostModel *GetCostModel(CMemoryPool *mp, ULONG num_segments);
 
 		// print warning messages for columns with missing statistics
 		static
-		void PrintMissingStatsWarning(IMemoryPool *mp, CMDAccessor *md_accessor, IMdIdArray *col_stats, MdidHashSet *phsmdidRel);
+		void PrintMissingStatsWarning(CMemoryPool *mp, CMDAccessor *md_accessor, IMdIdArray *col_stats, MdidHashSet *phsmdidRel);
 
 	public:
 

@@ -33,7 +33,7 @@ More information can be found on the [project website](https://greenplum.org/).
 ## Building Greenplum Database with GPORCA
 GPORCA is a cost-based optimizer which is used by Greenplum Database in
 conjunction with the PostgreSQL planner.  It is also known as just ORCA,
-and Pivotal Query Optimizer (PQO). The code for GPORCA resides in a
+and Pivotal Optimizer. The code for GPORCA resides in a
 separate repository, below are steps outlining how to build Greenplum with
 GPORCA enabled.
 
@@ -85,13 +85,13 @@ The directory and the TCP ports for the demo cluster can be changed on the fly.
 Instead of `make cluster`, consider:
 
 ```
-DATADIRS=/tmp/gpdb-cluster MASTER_PORT=15432 PORT_BASE=25432 make cluster
+DATADIRS=/tmp/gpdb-cluster PORT_BASE=5555 make cluster
 ```
 
 The TCP port for the regression test can be changed on the fly:
 
 ```
-PGPORT=15432 make installcheck-world
+PGPORT=5555 make installcheck-world
 ```
 
 Once build and started, run `psql` and check the GPOPT (e.g. GPORCA) version:
@@ -158,7 +158,7 @@ make distclean
 ### Building GPDB with PXF
 
 PXF is an extension framework for GPDB to enable fast access to external hadoop datasets.
-Refer to [PXF extension](gpAux/extensions/pxf/README.md) for more information.
+Refer to [PXF extension](gpcontrib/pxf/README.md) for more information.
 
 Currently, GPDB is built with PXF by default (--enable-pxf is on).
 In order to build GPDB without pxf, simply invoke `./configure` with additional option `--disable-pxf`.
@@ -179,6 +179,11 @@ gpperfmon is dependent on several libraries like apr, apu, and libsigar
 GPDB supports Python3 with plpython3u UDF
 
 See [how to enable Python3](src/pl/plpython/README.md) for details.
+
+
+### Building GPDB client tools on Windows
+
+See [Building GPDB client tools on Windows](README.windows.md) for details.
 
 ## Development with Docker
 

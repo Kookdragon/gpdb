@@ -772,8 +772,16 @@ cdbexplain_recvExecStats(struct PlanState *planstate,
 	/* Transfer worker counts to SliceSummary. */
 	showstatctx->slices[sliceIndex].dispatchSummary = ds;
 
-	/* Signal that we've gathered all the statistics */
-	showstatctx->stats_gathered = true;
+	/* Signal that we've gathered all the statistics
+	 * For some query, which has initplan on top of the plan,
+	 * its `ANALYZE EXPLAIN` invoke `cdbexplain_recvExecStats`
+	 * multi-times in different recursive routine to collect
+	 * metrics on both initplan and plan. Thus, this variable
+	 * should only assign on slice 0 after gather result done
+	 * to promise all slices information have been collected.
+	 */
+	if (sliceIndex == 0)
+		showstatctx->stats_gathered = true;
 
 	/* Clean up. */
 	if (ctx.msgptrs)
@@ -1466,7 +1474,7 @@ cdbexplain_showExecStatsBegin(struct QueryDesc *queryDesc,
 	ctx->querystarttime = querystarttime;
 
 	/* Determine number of slices.  (SliceTable hasn't been built yet.) */
-	nslice = 1 + queryDesc->plannedstmt->planTree->nMotionNodes + queryDesc->plannedstmt->planTree->nInitPlans;
+	nslice = 1 + queryDesc->plannedstmt->nMotionNodes + queryDesc->plannedstmt->nInitPlans;
 
 	/* Allocate and zero the SliceSummary array. */
 	ctx->nslice = nslice;
@@ -1916,39 +1924,21 @@ cdbexplain_showExecStatsEnd(struct PlannedStmt *stmt,
 		else
 			ExplainPropertyLong("Memory used", (long) kb(stmt->query_mem), es);
 
-		if (optimizer && explain_memory_verbosity == EXPLAIN_MEMORY_VERBOSITY_SUMMARY)
-		{
-			MemoryAccountExplain *acct = MemoryAccounting_ExplainCurrentOptimizerAccountInfo();
-
-			if (acct != NULL)
-			{
-				if (es->format == EXPLAIN_FORMAT_TEXT)
-				{
-					appendStringInfo(es->str, "ORCA Memory used: peak %ldkB  allocated %ldkB  freed %ldkB\n",
-									 (long) ceil((double) acct->peak / 1024L),
-									 (long) ceil((double) acct->allocated / 1024L),
-									 (long) ceil((double) acct->freed / 1024L));
-				}
-				else
-				{
-					ExplainPropertyLong("ORCA Memory Used Peak",
-										ceil((double) acct->peak / 1024L), es);
-					ExplainPropertyLong("ORCA Memory Used Allocated",
-										ceil((double) acct->allocated / 1024L), es);
-					ExplainPropertyLong("ORCA Memory Used Freed",
-										ceil((double) acct->freed / 1024L), es);
-				}
-
-				pfree(acct);
-			}
-		}
-
 		if (showstatctx->workmemwanted_max > 0)
 		{
 			long mem_wanted;
 
-			mem_wanted = (long) PolicyAutoStatementMemForNoSpillKB(stmt,
-							(uint64) showstatctx->workmemwanted_max / 1024L);
+			mem_wanted = (long) PolicyAutoStatementMemForNoSpill(stmt,
+							(uint64) showstatctx->workmemwanted_max);
+
+			/*
+			 * Round up to a kilobyte in case we end up requiring less than
+			 * that.
+			 */
+			if (mem_wanted <= 1024L)
+				mem_wanted = 1L;
+			else
+				mem_wanted = mem_wanted / 1024L;
 
 			if (es->format == EXPLAIN_FORMAT_TEXT)
 				appendStringInfo(es->str, "Memory wanted:  %ldkB\n", mem_wanted);

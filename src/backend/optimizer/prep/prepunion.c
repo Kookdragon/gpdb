@@ -19,7 +19,7 @@
  *
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present Pivotal Software, Inc.
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -120,7 +120,6 @@ static Node *adjust_appendrel_attrs_mutator(Node *node,
 static Relids adjust_relid_set(Relids relids, Index oldrelid, Index newrelid);
 static List *adjust_inherited_tlist(List *tlist,
 					   AppendRelInfo *context);
-
 
 /*
  * plan_set_operations
@@ -283,13 +282,15 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 		 */
 		if (pNumGroups)
 		{
-			if (subquery->groupClause || subquery->distinctClause ||
+			if (subquery->groupClause || subquery->groupingSets ||
+				subquery->distinctClause ||
 				subroot->hasHavingQual || subquery->hasAggs)
 				*pNumGroups = subplan->plan_rows;
 			else
 				*pNumGroups = estimate_num_groups(subroot,
 								get_tlist_exprs(subquery->targetList, false),
-												  subplan->plan_rows);
+												  subplan->plan_rows,
+												  NULL);
 		}
 
 		/*
@@ -445,6 +446,47 @@ generate_recursion_plan(SetOperationStmt *setOp, PlannerInfo *root,
 
 		/* Also convert to long int --- but 'ware overflow! */
 		numGroups = (long) Min(dNumGroups, (double) LONG_MAX);
+	}
+
+	/*
+	 * When building worktable scan path, its locus is set
+	 * the same as the non-recursive plan's locus. But in
+	 * Greenplum, locus may change by motion if worktable
+	 * join with other relations. In `cdbpath_motion_for_join`,
+	 * paths contains worktable scan are set ok_replicated to false
+	 * and movable to false, so if lplan's locus does not equal to
+	 * rplan's, rplan's locus must be singleQE or entry. Then we just make
+	 * them the same locus.
+	 */
+	if (lplan->flow->locustype != rplan->flow->locustype &&
+		lplan->flow->flotype == FLOW_SINGLETON &&
+		rplan->flow->flotype == FLOW_SINGLETON)
+	{
+		if (rplan->flow->locustype != CdbLocusType_SingleQE &&
+			rplan->flow->locustype != CdbLocusType_Entry)
+		{
+			elog(ERROR,
+				 "expect rplan's locus to be singleQE or entry, "
+				 "but found %d", rplan->flow->locustype);
+		}
+
+		if (lplan->flow->locustype == CdbLocusType_General ||
+			lplan->flow->locustype == CdbLocusType_Entry)
+		{
+			/* do nothing, will set flow correct at the end of the function */
+		}
+		else if (lplan->flow->locustype == CdbLocusType_SegmentGeneral)
+			lplan = (Plan *) make_motion_gather(root, lplan, NIL);
+		else
+		{
+			elog(ERROR,
+				 "expect lplan's locus to be either general or segmentgeneral, "
+				 "but found %d", lplan->flow->locustype);
+		}
+		/* set lplan's flow same as rplan's */
+		lplan->flow->locustype = rplan->flow->locustype;
+		lplan->flow->segindex = rplan->flow->segindex;
+		lplan->flow->numsegments = rplan->flow->numsegments;
 	}
 
 	/*
@@ -859,11 +901,8 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 								 extract_grouping_cols(groupList,
 													   plan->targetlist),
 								 extract_grouping_ops(groupList),
+								 NIL,
 								 numGroups,
-								 0, /* num_nullcols */
-								 0, /* input_grouping */
-								 0, /* grouping */
-								 0, /* rollupGSTimes */
 								 plan);
 		/* Hashed aggregation produces randomly-ordered results */
 		*sortClauses = NIL;
@@ -925,14 +964,19 @@ choose_hashed_setop(PlannerInfo *root, List *groupClauses,
 	/*
 	 * Don't do it if it doesn't look like the hashtable will fit into
 	 * work_mem.
+	 *
+	 * GPDB: In other places where we are building a Hash Aggregate, we use
+	 * calcHashAggTableSizes(), which takes into account that in GPDB, a Hash
+	 * Aggregate can spill to disk. We must *not* do that here, because we
+	 * might be building a Hashed SetOp, not a Hash Aggregate. A Hashed SetOp
+	 * uses the upstream hash table implementation unmodified, and cannot
+	 * spill.
+	 * FIXME: It's a bit lame that Hashed SetOp cannot spill to disk. And it's
+	 * even more lame that we don't account the spilling correctly, if we are
+	 * in fact constructing a Hash Aggregate. A UNION is implemented with a
+	 * Hash Aggregate, only INTERSECT and EXCEPT use Hashed SetOp.
 	 */
-
-	/*
-	 * Note that SetOp uses a TupleHashTable and not GPDB's HHashTable for
-	 * performing set operations. So, use the hash entry size calculations from
-	 * upstream.
-	 */
-	hashentrysize = MAXALIGN(input_plan->plan_width) + MAXALIGN(sizeof(MinimalTupleData));
+	hashentrysize = MAXALIGN(input_plan->plan_width) + MAXALIGN(SizeofMinimalTupleHeader);
 
 	if (hashentrysize * dNumGroups > work_mem * 1024L)
 		return false;
@@ -949,12 +993,11 @@ choose_hashed_setop(PlannerInfo *root, List *groupClauses,
 	 * make actual Paths for these steps.
 	 */
 	cost_agg(&hashed_p, root, AGG_HASHED, NULL,
-			 numGroupCols, dNumGroups,
+			 numGroupCols, dNumGroups / planner_segment_count(NULL),
 			 input_plan->startup_cost, input_plan->total_cost,
 			 input_plan->plan_rows,
-			 hashentrysize, /* input_width */
-			 0, /* hash_batches - so spilling expected with TupleHashTable */
-			 hashentrysize, /* hashentry_width */
+			 NULL, /* GPDB: We are using the upstream hash table implementation,
+					* which does not spill. */
 			 false /* hash_streaming */);
 
 	/*
@@ -1374,7 +1417,7 @@ expand_inherited_rtentry(PlannerInfo *root, RangeTblEntry *rte, Index rti)
 	 *
 	 * If the parent relation is the query's result relation, then we need
 	 * RowExclusiveLock.  Otherwise, if it's accessed FOR UPDATE/SHARE, we
-	 * need RowShareLock; otherwise AccessShareLock.  We can't just grab
+	 * need ExclusiveLock; otherwise AccessShareLock.  We can't just grab
 	 * AccessShareLock because then the executor would be trying to upgrade
 	 * the lock, leading to possible deadlocks.  (This code should match the
 	 * parser and rewriter.)
@@ -1382,8 +1425,24 @@ expand_inherited_rtentry(PlannerInfo *root, RangeTblEntry *rte, Index rti)
 	oldrc = get_plan_rowmark(root->rowMarks, rti);
 	if (rti == parse->resultRelation)
 		lockmode = RowExclusiveLock;
-	else if (oldrc && RowMarkRequiresRowShareLock(oldrc->markType))
-		lockmode = RowShareLock;
+	else if (oldrc)
+	{
+		/*
+		 * Greenplum specific behavior:
+		 * The implementation of select statement with locking clause
+		 * (for update | no key update | share | key share) in postgres
+		 * is to hold RowShareLock on tables during parsing stage, and
+		 * generate a LockRows plan node for executor to lock the tuples.
+		 * It is not easy to lock tuples in Greenplum database, since
+		 * tuples may be fetched through motion nodes.
+		 *
+		 * But when Global Deadlock Detector is enabled, and the select
+		 * statement with locking clause contains only one table, we are
+		 * sure that there are no motions. For such simple cases, we could
+		 * make the behavior just the same as Postgres.
+		 */
+		lockmode = oldrc->canOptSelectLockingClause ? RowShareLock : ExclusiveLock;
+	}
 	else
 		lockmode = AccessShareLock;
 
@@ -1456,12 +1515,13 @@ expand_inherited_rtentry(PlannerInfo *root, RangeTblEntry *rte, Index rti)
 
 		/*
 		 * Build an RTE for the child, and attach to query's rangetable list.
-		 * We copy most fields of the parent's RTE, but replace relation OID,
-		 * and set inh = false.  Also, set requiredPerms to zero since all
-		 * required permissions checks are done on the original RTE.
+		 * We copy most fields of the parent's RTE, but replace relation OID
+		 * and relkind, and set inh = false.  Also, set requiredPerms to zero
+		 * since all required permissions checks are done on the original RTE.
 		 */
 		childrte = copyObject(rte);
 		childrte->relid = childOID;
+		childrte->relkind = newrelation->rd_rel->relkind;
 		childrte->inh = false;
 		childrte->requiredPerms = 0;
 		parse->rtable = lappend(parse->rtable, childrte);
@@ -1488,14 +1548,16 @@ expand_inherited_rtentry(PlannerInfo *root, RangeTblEntry *rte, Index rti)
 		 * if this is the parent table, leave copyObject's result alone.
 		 *
 		 * Note: we need to do this even though the executor won't run any
-		 * permissions checks on the child RTE.  The modifiedCols bitmap may
-		 * be examined for trigger-firing purposes.
+		 * permissions checks on the child RTE.  The insertedCols/updatedCols
+		 * bitmaps may be examined for trigger-firing purposes.
 		 */
 		if (childOID != parentOID)
 		{
 			childrte->selectedCols = translate_col_privs(rte->selectedCols,
 												   appinfo->translated_vars);
-			childrte->modifiedCols = translate_col_privs(rte->modifiedCols,
+			childrte->insertedCols = translate_col_privs(rte->insertedCols,
+												   appinfo->translated_vars);
+			childrte->updatedCols = translate_col_privs(rte->updatedCols,
 												   appinfo->translated_vars);
 		}
 
@@ -1509,9 +1571,15 @@ expand_inherited_rtentry(PlannerInfo *root, RangeTblEntry *rte, Index rti)
 			newrc->rti = childRTindex;
 			newrc->prti = rti;
 			newrc->rowmarkId = oldrc->rowmarkId;
-			newrc->markType = oldrc->markType;
-			newrc->noWait = oldrc->noWait;
+			/* Reselect rowmark type, because relkind might not match parent */
+			newrc->markType = select_rowmark_type(childrte, oldrc->strength);
+			newrc->allMarkTypes = (1 << newrc->markType);
+			newrc->strength = oldrc->strength;
+			newrc->waitPolicy = oldrc->waitPolicy;
 			newrc->isParent = false;
+
+			/* Include child's rowmark type in parent's allMarkTypes */
+			oldrc->allMarkTypes |= newrc->allMarkTypes;
 
 			root->rowMarks = lappend(root->rowMarks, newrc);
 		}

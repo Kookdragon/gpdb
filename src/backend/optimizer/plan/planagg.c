@@ -19,7 +19,7 @@
  *
  * Portions Copyright (c) 2006-2008, Greenplum inc
  * Portions Copyright (c) 2012-Present Pivotal Software, Inc.
- * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -101,7 +101,7 @@ preprocess_minmax_aggregates(PlannerInfo *root, List *tlist)
 	 * performs assorted processing related to these features between calling
 	 * preprocess_minmax_aggregates and optimize_minmax_aggregates.)
 	 */
-	if (parse->groupClause || parse->hasWindowFuncs)
+	if (parse->groupClause || list_length(parse->groupingSets) > 1 || parse->hasWindowFuncs)
 		return;
 
 	/*
@@ -245,7 +245,7 @@ optimize_minmax_aggregates(PlannerInfo *root, List *tlist,
 	cost_agg(&agg_p, root, AGG_PLAIN, aggcosts,
 			 0, 0,
 			 best_path->startup_cost, best_path->total_cost,
-			 best_path->parent->rows, 0.0, 0.0, 0.0, false);
+			 best_path->parent->rows, NULL, false);
 
 	if (total_cost > agg_p.total_cost)
 		return NULL;			/* too expensive */
@@ -460,6 +460,7 @@ build_minmax_path(PlannerInfo *root, MinMaxAggInfo *mminfo,
 	ntest->arg = copyObject(mminfo->target);
 	/* we checked it wasn't a rowtype in find_minmax_aggs_walker */
 	ntest->argisrow = false;
+	ntest->location = -1;
 
 	/* User might have had that in WHERE already */
 	if (!list_member((List *) parse->jointree->quals, ntest))
@@ -578,8 +579,7 @@ make_agg_subplan(PlannerInfo *root, MinMaxAggInfo *mminfo)
 	else
 		elog(ERROR, "MIN/MAX subplan has unexpected flowtype: %d", plan->flow->type);
 
-	if (!focusPlan(plan, true, false))
-		elog(ERROR, "could not focus MIN/MAX subplan");
+	plan = focusPlan(plan, true);
 	plan = (Plan *) make_limit(plan,
 							   subparse->limitOffset,
 							   subparse->limitCount,

@@ -1,5 +1,30 @@
 SELECT min_val, max_val FROM pg_settings WHERE name = 'gp_resqueue_priority_cpucores_per_segment';
 
+-- Test cursor gang should not be reused if SET command happens.
+CREATE OR REPLACE FUNCTION test_set_cursor_func() RETURNS text as $$
+DECLARE
+  result text;
+BEGIN
+  EXECUTE 'select setting from pg_settings where name=''temp_buffers''' INTO result;
+  RETURN result;
+END;
+$$ LANGUAGE plpgsql;
+
+SET temp_buffers = 2000;
+BEGIN;
+  DECLARE set_cusor CURSOR FOR SELECT relname FROM gp_dist_random('pg_class');
+  -- The GUC setting should not be dispatched to the cursor gang.
+  SET temp_buffers = 3000;
+END;
+
+-- Verify the cursor gang is not reused. If the gang is reused, the
+-- temp_buffers value on that gang should be old one, i.e. 2000 instead of
+-- the new committed 3000.
+SELECT * from (SELECT test_set_cursor_func() FROM gp_dist_random('pg_class') limit 1) t1
+  JOIN (SELECT test_set_cursor_func() FROM gp_dist_random('pg_class') limit 1) t2 ON TRUE;
+
+RESET temp_buffers;
+
 --
 -- Test GUC if cursor is opened
 --
@@ -104,3 +129,19 @@ BEGIN TRANSACTION ISOLATION LEVEL serializable;
 	SELECT * FROM test_serializable;
 COMMIT;
 DROP TABLE test_serializable;
+
+
+-- Test single query guc rollback
+set allow_segment_DML to on;
+
+set datestyle='german';
+select gp_inject_fault('set_variable_fault', 'error', dbid)
+from gp_segment_configuration where content=0 and role='p';
+set datestyle='sql, mdy';
+-- after guc set failed, before next query handle, qd will sync guc
+-- to qe. using `select 1` trigger guc reset.
+select 1;
+select current_setting('datestyle') from gp_dist_random('gp_id');
+
+select gp_inject_fault('all', 'reset', dbid) from gp_segment_configuration;
+set allow_segment_DML to off;

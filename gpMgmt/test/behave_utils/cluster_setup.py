@@ -4,36 +4,6 @@ import socket
 import inspect
 from gppylib.commands.base import Command
 
-class GpSegInstall(Command):
-    """
-    This is a wrapper for gpseginstall
-    """
-    def __init__(self, gphome, hosts):
-        self.hostfile = '/tmp/gpseginstall_hosts'
-        self.gphome = gphome
-        self.hosts = hosts
-        cmd_str = "gpseginstall -f %s -u %s" %(self.hostfile, getpass.getuser())
-        Command.__init__(self, 'run gpseginstall', cmd_str)
-
-    def run(self, validate=True):
-        print "Running gpseginstall: %s" % self
-        with open(self.hostfile, 'w') as f:
-            for host in self.hosts[1:]:
-                f.write(host)
-                f.write('\n')
-
-        res = run_shell_command('gpssh-exkeys -f %s' %self.hostfile, 'gpssh-exkeys')
-        if res['rc'] > 0:
-            raise Exception("Failed to do gpssh-exkeys: %s" %res['stderr'])
-
-        res = run_shell_command("gpssh -f %s -e 'mkdir -p %s'" %(self.hostfile, self.gphome), 'gpssh-exkeys')
-        if res['rc'] > 0:
-            raise Exception("Failed to create gphome directories on segments: %s" %res[stderr])
-
-        Command.run(self, validateAfter=validate)
-        result = self.get_results()
-        return result
-
 class GpDeleteSystem(Command):
     """This is a wrapper for gpdeletesystem."""
     def __init__(self, mdd=None):
@@ -50,7 +20,7 @@ class GpDeleteSystem(Command):
 
 
 class TestCluster:
-    def __init__(self, hosts = None, base_dir = '/tmp/default_gpinitsystem'):
+    def __init__(self, hosts = None, base_dir = '/tmp/default_gpinitsystem', hba_hostnames='0'):
         """
         hosts: lists of cluster hosts. master host will be assumed to be the first element.
         base_dir: cluster directory
@@ -66,8 +36,6 @@ class TestCluster:
         self.port_base = '20500'
         self.master_port = os.environ.get('PGPORT', '10300')
         self.mirror_port_base = '21500'
-        self.rep_port_base = '22500'
-        self.mirror_rep_port_base = '23500'
 
         self.gpinitconfig_template = local_path('configs/gpinitconfig_template')
         self.gpinitconfig_mirror_template = local_path('configs/gpinitconfig_mirror_template')
@@ -92,6 +60,7 @@ class TestCluster:
         self.number_of_expansion_hosts = 0
         self.number_of_expansion_segments = 0
         self.number_of_parallel_table_redistributed = 4
+        self.hba_hostnames = hba_hostnames
 
     def _generate_env_file(self):
         env_file = os.path.join(self.base_dir, 'gpdb-env.sh')
@@ -107,14 +76,13 @@ class TestCluster:
                       '%HOSTFILE%': self.hosts_file,
                       '%MASTER_PORT%': self.master_port,
                       '%MASTER_DATA_DIR%': self.master_dir,
-                      '%DATA_DIR%': (self.primary_dir + ' ') * self.number_of_segments
+                      '%DATA_DIR%': (self.primary_dir + ' ') * self.number_of_segments,
+                      '%HBA_HOSTNAMES%': self.hba_hostnames
                       }
 
         if self.mirror_enabled:
             transforms['%MIRROR_DIR%'] = (self.mirror_dir + ' ') * self.number_of_segments
             transforms['%MIRROR_PORT_BASE%'] = self.mirror_port_base
-            transforms['%REP_PORT_BASE%'] = self.rep_port_base
-            transforms['%MIRROR_REP_PORT_BASE%'] = self.mirror_rep_port_base
 
         # First generate host file based on number_of_hosts
         with open(self.hosts_file, 'w') as f:
@@ -139,7 +107,7 @@ class TestCluster:
 
         # run gpinitsystem
         clean_env = 'unset MASTER_DATA_DIRECTORY; unset PGPORT;'
-        segment_mirroring_option = '-S' if mirroring_configuration == 'spread' else ''
+        segment_mirroring_option = '--mirror-mode=spread' if mirroring_configuration == 'spread' else ''
         gpinitsystem_cmd = clean_env + 'gpinitsystem -a -c  %s %s' % (self.init_file, segment_mirroring_option)
         res = run_shell_command(gpinitsystem_cmd, 'run gpinitsystem', verbose=True)
         # initsystem returns 1 for warnings and 2 for errors

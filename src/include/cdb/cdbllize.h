@@ -17,11 +17,9 @@
 #define CDBLLIZE_H
 
 #include "nodes/nodes.h"
-#include "nodes/parsenodes.h"
 #include "nodes/plannodes.h"
-#include "nodes/params.h"
 
-extern Plan *cdbparallelize(struct PlannerInfo *root, Plan *plan, Query *query);
+extern Plan *cdbparallelize(struct PlannerInfo *root, Plan *plan, bool *needToAssignDirectDispatchContentIds);
 
 extern bool is_plan_node(Node *node);
 
@@ -29,10 +27,11 @@ extern Flow *makeFlow(FlowType flotype, int numsegments);
 
 extern Flow *pull_up_Flow(Plan *plan, Plan *subplan);
 
-extern bool focusPlan(Plan *plan, bool stable, bool rescannable);
-extern bool repartitionPlan(Plan *plan, bool stable, bool rescannable,
-							List *hashExpr, List *hashOpfamilies, int numsegments);
-extern bool broadcastPlan(Plan *plan, bool stable, bool rescannable,
+extern Plan *focusPlan(Plan *plan, bool stable);
+extern Plan *repartitionPlan(Plan *plan, bool stable,
+							 List *hashExpr, List *hashOpfamilies,
+							 int numsegments);
+extern Plan *broadcastPlan(Plan *plan, bool stable,
 						  int numsegments);
 
 #endif   /* CDBLLIZE_H */

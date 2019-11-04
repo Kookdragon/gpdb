@@ -2,7 +2,7 @@
 #
 # Makefile for src/bin/pg_dump
 #
-# Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2015, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/bin/pg_dump/Makefile
@@ -16,12 +16,6 @@ subdir = src/bin/pg_dump
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-# The frontend doesn't need everything that's in LIBS, some are backend only
-LIBS := $(filter-out -lresolv, $(LIBS))
-# This program isn't interactive, so doesn't need these
-LIBS := $(filter-out -lreadline -ledit -ltermcap -lncurses -lcurses -lcurl , $(LIBS))
-
-
 # the use of tempnam in pg_backup_tar.c causes a warning when using newer versions of GCC
 override CPPFLAGS := -Wno-deprecated-declarations -I$(libpq_srcdir) $(CPPFLAGS)
 
@@ -32,6 +26,8 @@ endif
 OBJS=	pg_backup_archiver.o pg_backup_db.o pg_backup_custom.o \
 	pg_backup_null.o pg_backup_tar.o pg_backup_directory.o \
 	pg_backup_utils.o parallel.o compress_io.o dumputils.o $(WIN32RES)
+
+OBJS += dumputils_gp.o
 
 KEYWRDOBJS = keywords.o kwlookup.o
 
